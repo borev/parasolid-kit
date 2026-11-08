@@ -3444,6 +3444,16 @@ fn push_diagnostic(
 }
 
 #[cfg(test)]
+#[allow(
+    clippy::similar_names,
+    reason = "Fixture indices and values are bounded and kept explicit for regression checks."
+)]
+#[allow(
+    clippy::expect_used,
+    clippy::too_many_lines,
+    clippy::unwrap_used,
+    reason = "Tests use explicit fixture failures and exact expected values."
+)]
 mod tests {
     use crate::{FieldDefinition, FieldType, RawField, SchemaSource, TypeDefinition};
 
