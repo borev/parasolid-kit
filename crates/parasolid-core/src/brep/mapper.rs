@@ -4145,12 +4145,7 @@ mod tests {
             shells: vec![],
             source,
         };
-        let mapper = Mapper::new(
-            BrepSourceFormat::Binary,
-            "SCH_TEST",
-            &[],
-            RoleAccess::Named,
-        );
+        let mapper = Mapper::new(BrepSourceFormat::Binary, "SCH_TEST", &[], RoleAccess::Named);
 
         let error = mapper
             .validate_topology(&[body], &[region], &[], &[], &[], &[], &[], &[])
@@ -5031,10 +5026,12 @@ mod tests {
         assert_eq!(recovered.topology, geometry.topology);
         assert_eq!(recovered.complete, geometry.complete);
         assert!(recovered.attributes.is_empty());
-        assert!(recovered
-            .bodies
-            .iter()
-            .all(|body| body.attributes.is_empty()));
+        assert!(
+            recovered
+                .bodies
+                .iter()
+                .all(|body| body.attributes.is_empty())
+        );
         assert_eq!(recovered.diagnostics.len(), 1);
         assert_eq!(
             recovered.diagnostics[0].code,
@@ -5502,5 +5499,368 @@ mod tests {
                 expected_type: "REGION",
             })
         );
+    }
+
+    mod mesh_surface_tests {
+        use super::*;
+        use crate::SchemaProvider;
+        use crate::brep::MeshIndexOrigin;
+
+        const KEY: &str = "SCH_3300259_32001_13006";
+
+        fn profile_type(key: &crate::SchemaKey, name: &str) -> Option<TypeDefinition> {
+            let provider = crate::BuiltinProfileRegistry::compiled()
+                .unwrap()
+                .provider_for_key(key)?;
+            (0..=u16::MAX).find_map(|node_type| {
+                provider
+                    .type_definition(key.effective(), node_type)
+                    .filter(|definition| definition.name == name)
+                    .cloned()
+            })
+        }
+
+        fn exact_node(
+            definition: TypeDefinition,
+            index: u32,
+            overrides: &[(&str, Vec<FieldValue>)],
+        ) -> RawNode {
+            let fields = definition
+                .fields
+                .iter()
+                .map(|field| {
+                    overrides
+                        .iter()
+                        .find(|(name, _)| *name == field.name)
+                        .map_or_else(
+                            || vec![builtin_default(field.field_type)],
+                            |(_, values)| values.clone(),
+                        )
+                })
+                .collect::<Vec<_>>();
+            let variable_length = definition
+                .variable
+                .then(|| u32::try_from(fields.last().map_or(0, Vec::len)).unwrap());
+            RawNode {
+                node_type: definition.node_type,
+                index,
+                variable_length,
+                fields: definition
+                    .fields
+                    .iter()
+                    .cloned()
+                    .zip(fields)
+                    .map(|(definition, values)| RawField {
+                        definition: definition.into(),
+                        values,
+                        byte_range: 0..0,
+                    })
+                    .collect(),
+                definition: definition.into(),
+                first_schema: None,
+                byte_range: 0..0,
+                user_fields: Vec::new(),
+            }
+        }
+
+        fn builtin_default(field_type: FieldType) -> FieldValue {
+            match field_type {
+                FieldType::UnsignedByte => FieldValue::UnsignedByte(0),
+                FieldType::Character => FieldValue::Character(b'+'),
+                FieldType::Logical => FieldValue::Logical(false),
+                FieldType::ShortInteger => FieldValue::ShortInteger(Some(0)),
+                FieldType::UnicodeCharacter => FieldValue::UnicodeCharacter(0),
+                FieldType::Integer => FieldValue::Integer(Some(0)),
+                FieldType::PointerIndex => FieldValue::PointerIndex(0),
+                FieldType::OpaquePointer => unreachable!(),
+                FieldType::Tag => FieldValue::Tag(Some(0)),
+                FieldType::Double => FieldValue::Double(Some(0.0)),
+                FieldType::Interval => FieldValue::Interval([Some(0.0); 2]),
+                FieldType::Vector => FieldValue::Vector([Some(0.0); 3]),
+                FieldType::Box3 => FieldValue::Box3([Some(0.0); 6]),
+                FieldType::IntersectionPoint => FieldValue::IntersectionPoint([Some(0.0); 3]),
+            }
+        }
+
+        fn exact_field_values(
+            name: &'static str,
+            values: Vec<FieldValue>,
+        ) -> (&'static str, Vec<FieldValue>) {
+            (name, values)
+        }
+
+        fn mesh_and_face_nodes() -> Vec<RawNode> {
+            let key = crate::SchemaKey::parse(KEY).unwrap();
+            let mesh = profile_type(&key, "MESH").unwrap();
+            let psm = profile_type(&key, "PSM_MESH").unwrap();
+            let mut nodes = vec![
+                exact_node(
+                    mesh,
+                    1,
+                    &[
+                        exact_field_values("owner", vec![FieldValue::PointerIndex(0)]),
+                        exact_field_values("sense", vec![FieldValue::Character(b'+')]),
+                        exact_field_values("transform", vec![FieldValue::PointerIndex(0)]),
+                        exact_field_values("psm_imesh", vec![FieldValue::PointerIndex(2)]),
+                    ],
+                ),
+                exact_node(profile_type(&key, "SHELL").unwrap(), 8, &[]),
+                exact_node(
+                    profile_type(&key, "FACE").unwrap(),
+                    9,
+                    &[
+                        exact_field_values("next", vec![FieldValue::PointerIndex(0)]),
+                        exact_field_values("previous", vec![FieldValue::PointerIndex(0)]),
+                        exact_field_values("loop", vec![FieldValue::PointerIndex(0)]),
+                        exact_field_values("shell", vec![FieldValue::PointerIndex(8)]),
+                        exact_field_values("surface", vec![FieldValue::PointerIndex(1)]),
+                        exact_field_values("sense", vec![FieldValue::Character(b'-')]),
+                        exact_field_values("next_on_surface", vec![FieldValue::PointerIndex(0)]),
+                        exact_field_values(
+                            "previous_on_surface",
+                            vec![FieldValue::PointerIndex(0)],
+                        ),
+                        exact_field_values("next_front", vec![FieldValue::PointerIndex(0)]),
+                        exact_field_values("previous_front", vec![FieldValue::PointerIndex(0)]),
+                        exact_field_values("front_shell", vec![FieldValue::PointerIndex(8)]),
+                    ],
+                ),
+            ];
+            nodes.extend([
+                exact_node(
+                    psm,
+                    2,
+                    &[
+                        exact_field_values("precision", vec![FieldValue::UnsignedByte(1)]),
+                        exact_field_values("owner", vec![FieldValue::PointerIndex(0)]),
+                        exact_field_values("position_pool", vec![FieldValue::PointerIndex(3)]),
+                        exact_field_values("normal_pool", vec![FieldValue::PointerIndex(0)]),
+                        exact_field_values("position_indices", vec![FieldValue::PointerIndex(5)]),
+                        exact_field_values("normal_type", vec![FieldValue::UnsignedByte(1)]),
+                        exact_field_values("normal_indices", vec![FieldValue::PointerIndex(0)]),
+                    ],
+                ),
+                exact_node(
+                    profile_type(&key, "VECTOR_COMB").unwrap(),
+                    3,
+                    &[
+                        exact_field_values("encoding", vec![FieldValue::UnsignedByte(1)]),
+                        exact_field_values("n_vectors", vec![FieldValue::Integer(Some(3))]),
+                        exact_field_values("n_max_vectors", vec![FieldValue::Integer(Some(4))]),
+                        exact_field_values("shift", vec![FieldValue::Integer(Some(2))]),
+                        exact_field_values("teeth", vec![FieldValue::PointerIndex(4)]),
+                    ],
+                ),
+                exact_node(
+                    profile_type(&key, "VECTOR_TOOTH").unwrap(),
+                    4,
+                    &[exact_field_values(
+                        "values",
+                        [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 9.0, 9.0, 9.0]
+                            .into_iter()
+                            .map(|value| FieldValue::Double(Some(value)))
+                            .collect(),
+                    )],
+                ),
+                exact_node(
+                    profile_type(&key, "INTEGER_COMB").unwrap(),
+                    5,
+                    &[
+                        exact_field_values("encoding", vec![FieldValue::UnsignedByte(1)]),
+                        exact_field_values("n_integers", vec![FieldValue::Integer(Some(3))]),
+                        exact_field_values("n_max_integers", vec![FieldValue::Integer(Some(4))]),
+                        exact_field_values(
+                            "n_bits_per_integer",
+                            vec![FieldValue::Integer(Some(32))],
+                        ),
+                        exact_field_values("shift", vec![FieldValue::Integer(Some(2))]),
+                        exact_field_values("teeth", vec![FieldValue::PointerIndex(6)]),
+                    ],
+                ),
+                exact_node(
+                    profile_type(&key, "INTEGER_TOOTH").unwrap(),
+                    6,
+                    &[exact_field_values(
+                        "values",
+                        [0, 1, 2, 99]
+                            .into_iter()
+                            .map(|value| FieldValue::Integer(Some(value)))
+                            .collect(),
+                    )],
+                ),
+            ]);
+            nodes
+        }
+
+        fn mesh_model(face: Face, surfaces: Vec<SurfaceGeometry>) -> BrepModel {
+            BrepModel {
+                source_format: BrepSourceFormat::Text,
+                schema_key: KEY.to_owned(),
+                complete: true,
+                bodies: vec![],
+                regions: vec![],
+                shells: vec![],
+                faces: vec![face],
+                loops: vec![],
+                half_edges: vec![],
+                edges: vec![],
+                vertices: vec![],
+                points: vec![],
+                curves: vec![],
+                surfaces,
+                topology: TopologyValidation {
+                    valid: true,
+                    closed_loop_count: 0,
+                    closed_edge_ring_count: 0,
+                    euler_characteristic: 0,
+                },
+                metrics: BrepMetrics {
+                    bounding_box: None,
+                    surface_area: None,
+                    volume: None,
+                },
+                assemblies: vec![],
+                instances: vec![],
+                attributes: vec![],
+                diagnostics: vec![],
+            }
+        }
+
+        #[test]
+        fn maps_embedded_mesh_as_face_surface_without_guessing_index_origin() {
+            let mut nodes = mesh_and_face_nodes();
+            nodes[0]
+                .fields
+                .iter_mut()
+                .find(|field| field.definition.name == "transform")
+                .unwrap()
+                .values = vec![FieldValue::PointerIndex(7)];
+            nodes.push(exact_node(
+                profile_type(&crate::SchemaKey::parse(KEY).unwrap(), "TRANSFORM").unwrap(),
+                7,
+                &[
+                    exact_field_values(
+                        "rotation_matrix",
+                        [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+                            .into_iter()
+                            .map(|value| FieldValue::Double(Some(value)))
+                            .collect(),
+                    ),
+                    exact_field_values(
+                        "translation_vector",
+                        vec![FieldValue::Vector([Some(10.0), Some(0.0), Some(0.0)])],
+                    ),
+                    exact_field_values("scale", vec![FieldValue::Double(Some(2.0))]),
+                    exact_field_values("flag", vec![FieldValue::Integer(Some(0))]),
+                    exact_field_values("perspective_vector", vec![FieldValue::Vector([None; 3])]),
+                ],
+            ));
+            let mut mapper = Mapper::new(
+                BrepSourceFormat::Text,
+                KEY,
+                &nodes,
+                RoleAccess::TopsolidCatalog,
+            );
+            let face = mapper.map_face(9).unwrap();
+            let surface = mapper.map_surface(1).unwrap();
+            assert_eq!(face.surface, Some(surface.id));
+            assert_eq!(face.sense, Sense::Negative);
+            assert_eq!(surface.sense, Sense::Positive);
+            assert!(matches!(
+                &surface.kind,
+                SurfaceKind::Mesh {
+                    transform_index: Some(7),
+                    transform: Some(transform),
+                    ..
+                } if transform.index == 7 && transform.translation == [10.0, 0.0, 0.0]
+            ));
+            let triangles = surface
+                .kind
+                .mesh_triangles_with_index_origin(MeshIndexOrigin::ZeroBased, face.sense)
+                .unwrap()
+                .unwrap();
+            assert_eq!(
+                triangles[0],
+                [[20.0, 0.0, 0.0], [20.0, 2.0, 0.0], [22.0, 0.0, 0.0]]
+            );
+            let brep = mesh_model(face.clone(), vec![surface.clone()]);
+            assert_eq!(
+                brep.mesh_triangles_for_face_with_index_origin(face.id, MeshIndexOrigin::ZeroBased)
+                    .unwrap()
+                    .unwrap(),
+                triangles
+            );
+            assert_eq!(
+                brep.mesh_triangles_for_face_with_inferred_index_origin(face.id)
+                    .unwrap()
+                    .unwrap(),
+                triangles
+            );
+
+            let mut ambiguous_brep = brep.clone();
+            let SurfaceKind::Mesh {
+                embedded: Some(mesh),
+                ..
+            } = &mut ambiguous_brep.surfaces[0].kind
+            else {
+                panic!("expected embedded mesh surface");
+            };
+            mesh.position_indices.values[..3].copy_from_slice(&[1, 2, 2]);
+            assert!(matches!(
+                ambiguous_brep.mesh_triangles_for_face_with_inferred_index_origin(face.id),
+                Err(crate::brep::MeshDataError::Invalid {
+                    field: "position_indices",
+                    reason: "index origin is ambiguous",
+                    ..
+                })
+            ));
+            assert!(
+                brep.mesh_triangles_for_face_with_index_origin(999, MeshIndexOrigin::ZeroBased)
+                    .unwrap()
+                    .is_none()
+            );
+
+            let mut face_without_surface = face.clone();
+            face_without_surface.surface = None;
+            assert!(
+                mesh_model(face_without_surface, vec![surface.clone()])
+                    .mesh_triangles_for_face_with_index_origin(face.id, MeshIndexOrigin::ZeroBased)
+                    .unwrap()
+                    .is_none()
+            );
+            let mut non_mesh_surface = surface.clone();
+            non_mesh_surface.kind = SurfaceKind::Unsupported {
+                type_name: "MESH".to_owned(),
+            };
+            assert!(
+                mesh_model(face.clone(), vec![non_mesh_surface])
+                    .mesh_triangles_for_face_with_index_origin(face.id, MeshIndexOrigin::ZeroBased)
+                    .unwrap()
+                    .is_none()
+            );
+
+            let mut duplicate_face = mesh_model(face.clone(), vec![surface.clone()]);
+            duplicate_face.faces.push(face.clone());
+            assert!(matches!(
+                duplicate_face
+                    .mesh_triangles_for_face_with_index_origin(face.id, MeshIndexOrigin::ZeroBased),
+                Err(crate::brep::MeshDataError::Invalid {
+                    field: "face_id",
+                    reason: "face ID resolves to multiple mapped faces",
+                    ..
+                })
+            ));
+            let mut duplicate_surface = mesh_model(face.clone(), vec![surface.clone()]);
+            duplicate_surface.surfaces.push(surface);
+            assert!(matches!(
+                duplicate_surface
+                    .mesh_triangles_for_face_with_index_origin(face.id, MeshIndexOrigin::ZeroBased),
+                Err(crate::brep::MeshDataError::Invalid {
+                    field: "surface_id",
+                    reason: "surface ID resolves to multiple mapped surfaces",
+                    ..
+                })
+            ));
+        }
     }
 }
