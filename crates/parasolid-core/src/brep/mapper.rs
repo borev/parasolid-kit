@@ -67,8 +67,43 @@ pub fn map_xb_brep_with_diagnostic_limit(
     document: &XbDocument,
     max_diagnostics: usize,
 ) -> Result<BrepModel, ParseError> {
+    map_xb_brep_with_options(document, max_diagnostics, false)
+}
+
+/// Map an `X_B` document, retaining geometry when optional semantic metadata decoding fails.
+///
+/// If any attribute is malformed, all semantic attributes are omitted. If any assembly or
+/// instance is malformed, both collections are omitted. Each failure adds a diagnostic;
+/// geometry and topology errors remain strict.
+///
+/// # Errors
+/// Returns a schema/provider resolution error, a strict geometry/topology error (including
+/// missing bodies, malformed required fields, unresolved required references, inconsistent
+/// NURBS arrays, or invalid topology rings), or a limit error if diagnostics exceed the
+/// unbounded entry point's capacity.
+pub fn map_xb_brep_with_metadata_recovery(document: &XbDocument) -> Result<BrepModel, ParseError> {
+    map_xb_brep_with_metadata_recovery_and_diagnostic_limit(document, usize::MAX)
+}
+
+/// Map an `X_B` document with metadata recovery and a bound on retained diagnostics.
+///
+/// # Errors
+/// Returns an invalid-limit error for zero, a limit error when geometry and metadata
+/// diagnostics exceed the bound, or a strict geometry/topology error.
+pub fn map_xb_brep_with_metadata_recovery_and_diagnostic_limit(
+    document: &XbDocument,
+    max_diagnostics: usize,
+) -> Result<BrepModel, ParseError> {
+    map_xb_brep_with_options(document, max_diagnostics, true)
+}
+
+fn map_xb_brep_with_options(
+    document: &XbDocument,
+    max_diagnostics: usize,
+    recover_metadata: bool,
+) -> Result<BrepModel, ParseError> {
     validate_diagnostic_limit(max_diagnostics)?;
-    Mapper::new(
+    let mapper = Mapper::new(
         BrepSourceFormat::Binary,
         document.schema_key.raw(),
         &document.nodes,
@@ -78,8 +113,12 @@ pub fn map_xb_brep_with_diagnostic_limit(
             &document.schemas,
         )?,
     )
-    .with_max_diagnostics(max_diagnostics)
-    .map()
+    .with_max_diagnostics(max_diagnostics);
+    if recover_metadata {
+        mapper.map_with_metadata_recovery()
+    } else {
+        mapper.map()
+    }
 }
 
 /// Map a complete `X_T` raw document into the Parasolid-native B-Rep model.
@@ -102,8 +141,43 @@ pub fn map_xt_brep_with_diagnostic_limit(
     document: &XtDocument,
     max_diagnostics: usize,
 ) -> Result<BrepModel, ParseError> {
+    map_xt_brep_with_options(document, max_diagnostics, false)
+}
+
+/// Map an `X_T` document, retaining geometry when optional semantic metadata decoding fails.
+///
+/// If any attribute is malformed, all semantic attributes are omitted. If any assembly or
+/// instance is malformed, both collections are omitted. Each failure adds a diagnostic;
+/// geometry and topology errors remain strict.
+///
+/// # Errors
+/// Returns a schema/provider resolution error, a strict geometry/topology error (including
+/// missing bodies, malformed required fields, unresolved required references, inconsistent
+/// NURBS arrays, or invalid topology rings), or a limit error if diagnostics exceed the
+/// unbounded entry point's capacity.
+pub fn map_xt_brep_with_metadata_recovery(document: &XtDocument) -> Result<BrepModel, ParseError> {
+    map_xt_brep_with_metadata_recovery_and_diagnostic_limit(document, usize::MAX)
+}
+
+/// Map an `X_T` document with metadata recovery and a bound on retained diagnostics.
+///
+/// # Errors
+/// Returns an invalid-limit error for zero, a limit error when geometry and metadata
+/// diagnostics exceed the bound, or a strict geometry/topology error.
+pub fn map_xt_brep_with_metadata_recovery_and_diagnostic_limit(
+    document: &XtDocument,
+    max_diagnostics: usize,
+) -> Result<BrepModel, ParseError> {
+    map_xt_brep_with_options(document, max_diagnostics, true)
+}
+
+fn map_xt_brep_with_options(
+    document: &XtDocument,
+    max_diagnostics: usize,
+    recover_metadata: bool,
+) -> Result<BrepModel, ParseError> {
     validate_diagnostic_limit(max_diagnostics)?;
-    Mapper::new(
+    let mapper = Mapper::new(
         BrepSourceFormat::Text,
         document.schema_key.raw(),
         &document.nodes,
@@ -113,8 +187,12 @@ pub fn map_xt_brep_with_diagnostic_limit(
             &document.schemas,
         )?,
     )
-    .with_max_diagnostics(max_diagnostics)
-    .map()
+    .with_max_diagnostics(max_diagnostics);
+    if recover_metadata {
+        mapper.map_with_metadata_recovery()
+    } else {
+        mapper.map()
+    }
 }
 
 /// Decode the optional UV data linked by one `X_T` `INTERSECTION` node.
@@ -326,8 +404,16 @@ impl<'a> Mapper<'a> {
         self
     }
 
+    fn map(self) -> Result<BrepModel, ParseError> {
+        self.map_with_policy(false)
+    }
+
+    fn map_with_metadata_recovery(self) -> Result<BrepModel, ParseError> {
+        self.map_with_policy(true)
+    }
+
     #[allow(clippy::too_many_lines)]
-    fn map(mut self) -> Result<BrepModel, ParseError> {
+    fn map_with_policy(mut self, recover_metadata: bool) -> Result<BrepModel, ParseError> {
         if self.ids.bodies.is_empty() {
             return Err(ParseError::new(
                 ErrorKind::MissingBrepBody,
@@ -337,16 +423,35 @@ impl<'a> Mapper<'a> {
             ));
         }
 
-        let assemblies = self
-            .ordered_indices(&self.ids.assemblies)
-            .into_iter()
-            .map(|index| self.map_assembly(index))
-            .collect::<Result<Vec<_>, _>>()?;
-        let instances = self
-            .ordered_indices(&self.ids.instances)
-            .into_iter()
-            .map(|index| self.map_instance(index))
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut assemblies = Vec::with_capacity(self.ids.assemblies.len());
+        let mut instances = Vec::with_capacity(self.ids.instances.len());
+        let mut assembly_error = None;
+        for index in self.ordered_indices(&self.ids.assemblies) {
+            match self.map_assembly(index) {
+                Ok(assembly) => assemblies.push(assembly),
+                Err(error) if recover_metadata => {
+                    assemblies.clear();
+                    assembly_error = Some((index, error));
+                    break;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        if assembly_error.is_none() {
+            for index in self.ordered_indices(&self.ids.instances) {
+                match self.map_instance(index) {
+                    Ok(instance) => instances.push(instance),
+                    Err(error) if recover_metadata => {
+                        assemblies.clear();
+                        instances.clear();
+                        assembly_error = Some((index, error));
+                        break;
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+        let assembly_metadata_discarded = assembly_error.is_some();
         let mut bodies = self
             .ordered_indices(&self.ids.bodies)
             .into_iter()
@@ -402,8 +507,68 @@ impl<'a> Mapper<'a> {
             surfaces.push(self.map_surface(index)?);
         }
         let mut attributes = Vec::with_capacity(self.ids.attributes.len());
+        let mut attribute_error = None;
         for index in self.ordered_indices(&self.ids.attributes) {
-            attributes.push(self.map_attribute(index)?);
+            let mapped = if assembly_metadata_discarded {
+                self.map_attribute_with_metadata_policy(index, true)
+            } else {
+                self.map_attribute(index)
+            };
+            match mapped {
+                Ok(attribute) => attributes.push(attribute),
+                Err(error) if recover_metadata => {
+                    attributes.clear();
+                    attribute_error = Some((index, error));
+                    break;
+                }
+                Err(error) => return Err(error),
+            }
+        }
+        let topology = self.validate_topology(
+            &bodies,
+            &regions,
+            &shells,
+            &faces,
+            &loops,
+            &half_edges,
+            &edges,
+            &vertices,
+        )?;
+        let geometry_complete = topology.valid && self.diagnostics.get_mut().is_empty();
+
+        if let Some((source_index, error)) = assembly_error {
+            let Some(source_node) = self.nodes.get(&source_index).copied() else {
+                return Err(error);
+            };
+            let diagnostic = BrepDiagnostic {
+                code: "metadata.assembly_decode_failed",
+                message: error.message().to_owned(),
+                role: "assembly",
+                source: self.source(source_node),
+            };
+            push_diagnostic(
+                self.diagnostics.get_mut(),
+                self.max_diagnostics,
+                error.offset(),
+                diagnostic,
+            )?;
+        }
+        if let Some((source_index, error)) = attribute_error {
+            let Some(source_node) = self.nodes.get(&source_index).copied() else {
+                return Err(error);
+            };
+            let diagnostic = BrepDiagnostic {
+                code: "metadata.attribute_decode_failed",
+                message: error.message().to_owned(),
+                role: "attribute",
+                source: self.source(source_node),
+            };
+            push_diagnostic(
+                self.diagnostics.get_mut(),
+                self.max_diagnostics,
+                error.offset(),
+                diagnostic,
+            )?;
         }
         for attribute in &attributes {
             match attribute.owner {
@@ -421,16 +586,6 @@ impl<'a> Mapper<'a> {
             }
         }
 
-        let topology = self.validate_topology(
-            &bodies,
-            &regions,
-            &shells,
-            &faces,
-            &loops,
-            &half_edges,
-            &edges,
-            &vertices,
-        )?;
         let mut model = BrepModel {
             source_format: self.source_format,
             schema_key: self.schema_key.to_owned(),
@@ -458,7 +613,7 @@ impl<'a> Mapper<'a> {
             diagnostics: self.diagnostics.into_inner(),
         };
         model.metrics = derive_metrics(&model);
-        model.complete = model.topology.valid && model.diagnostics.is_empty();
+        model.complete = geometry_complete;
         Ok(model)
     }
 
@@ -706,6 +861,14 @@ impl<'a> Mapper<'a> {
     }
 
     fn map_attribute(&self, index: u32) -> Result<Attribute, ParseError> {
+        self.map_attribute_with_metadata_policy(index, false)
+    }
+
+    fn map_attribute_with_metadata_policy(
+        &self,
+        index: u32,
+        assembly_metadata_discarded: bool,
+    ) -> Result<Attribute, ParseError> {
         let node = self.node(index)?;
         let definition = self.required_typed_node(node, "definition", "ATTRIB_DEF")?;
         let identifier_node = self.required_typed_node(definition, "identifier", "ATT_DEF_ID")?;
@@ -721,7 +884,14 @@ impl<'a> Mapper<'a> {
                 "attribute owner pointer is unresolved",
             )
         })?;
-        let owner = self.attribute_owner(owner_node);
+        let owner = if assembly_metadata_discarded
+            && (self.ids.assemblies.contains_key(&owner_index)
+                || self.ids.instances.contains_key(&owner_index))
+        {
+            AttributeOwner::Other(self.source(owner_node))
+        } else {
+            self.attribute_owner(owner_node)
+        };
         // The definition types each field; an empty field is transmitted as
         // a null pointer (the reference's pointer fields always are).
         let declared_kinds: Vec<u8> = self
@@ -3560,6 +3730,57 @@ mod tests {
         ]
     }
 
+    fn nodes_with_valid_then_broken_attributes() -> Vec<RawNode> {
+        let mut nodes = wire_acorn_nodes();
+        nodes.extend([
+            node(
+                6,
+                81,
+                "ATTRIBUTE",
+                vec![
+                    field("node_id", 0, vec![FieldValue::Integer(Some(6))]),
+                    field("definition", 80, vec![FieldValue::PointerIndex(7)]),
+                    field("owner", 0, vec![FieldValue::PointerIndex(1)]),
+                    field("fields", 0, vec![FieldValue::PointerIndex(9)]),
+                ],
+            ),
+            node(
+                7,
+                80,
+                "ATTRIB_DEF",
+                vec![
+                    field("identifier", 79, vec![FieldValue::PointerIndex(8)]),
+                    field("type_id", 0, vec![FieldValue::Integer(Some(1))]),
+                    field("fields", 0, vec![FieldValue::UnsignedByte(1)]),
+                ],
+            ),
+            node(
+                8,
+                79,
+                "ATT_DEF_ID",
+                vec![field("string", 0, vec![FieldValue::Character(b'x')])],
+            ),
+            node(
+                9,
+                82,
+                "INT_VALUES",
+                vec![field("values", 0, vec![FieldValue::Integer(Some(42))])],
+            ),
+            node(
+                10,
+                81,
+                "ATTRIBUTE",
+                vec![
+                    field("node_id", 0, vec![FieldValue::Integer(Some(10))]),
+                    field("definition", 80, vec![FieldValue::PointerIndex(99)]),
+                    field("owner", 0, vec![FieldValue::PointerIndex(1)]),
+                    field("fields", 0, vec![]),
+                ],
+            ),
+        ]);
+        nodes
+    }
+
     /// A root assembly (6) placing the body through a transform (7, 8) and a
     /// negative instance (9) of a sub-assembly (10).
     fn assembly_nodes(part: u32, instance_type: u8, transform: u32, scale: f64) -> Vec<RawNode> {
@@ -3648,6 +3869,71 @@ mod tests {
                 ],
             ),
         ]
+    }
+
+    fn nodes_with_assembly_owned_attributes(broken_node: Option<u32>) -> Vec<RawNode> {
+        let mut nodes = wire_acorn_nodes();
+        let mut assemblies = assembly_nodes(1, 1, 8, 2.0);
+        if let Some(index) = broken_node {
+            let record = assemblies
+                .iter_mut()
+                .find(|node| node.index == index)
+                .expect("selected assembly record exists");
+            let type_field = record
+                .fields
+                .iter_mut()
+                .find(|field| field.definition.name == "type")
+                .expect("assembly record has a type");
+            type_field.values = vec![FieldValue::UnsignedByte(99)];
+        }
+        nodes.extend(assemblies);
+        nodes.extend([
+            node(
+                20,
+                81,
+                "ATTRIBUTE",
+                vec![
+                    field("node_id", 0, vec![FieldValue::Integer(Some(20))]),
+                    field("definition", 80, vec![FieldValue::PointerIndex(21)]),
+                    field("owner", 0, vec![FieldValue::PointerIndex(6)]),
+                    field("fields", 0, vec![FieldValue::PointerIndex(23)]),
+                ],
+            ),
+            node(
+                21,
+                80,
+                "ATTRIB_DEF",
+                vec![
+                    field("identifier", 79, vec![FieldValue::PointerIndex(22)]),
+                    field("type_id", 0, vec![FieldValue::Integer(Some(1))]),
+                    field("fields", 0, vec![FieldValue::UnsignedByte(1)]),
+                ],
+            ),
+            node(
+                22,
+                79,
+                "ATT_DEF_ID",
+                vec![field("string", 0, vec![FieldValue::Character(b'x')])],
+            ),
+            node(
+                23,
+                82,
+                "INT_VALUES",
+                vec![field("values", 0, vec![FieldValue::Integer(Some(42))])],
+            ),
+            node(
+                24,
+                81,
+                "ATTRIBUTE",
+                vec![
+                    field("node_id", 0, vec![FieldValue::Integer(Some(24))]),
+                    field("definition", 80, vec![FieldValue::PointerIndex(21)]),
+                    field("owner", 0, vec![FieldValue::PointerIndex(7)]),
+                    field("fields", 0, vec![FieldValue::PointerIndex(23)]),
+                ],
+            ),
+        ]);
+        nodes
     }
 
     #[test]
@@ -4688,6 +4974,228 @@ mod tests {
             ));
             assert_eq!(model.curves[0].source.node_index, 6);
         }
+    }
+
+    #[test]
+    fn attribute_recovery_is_opt_in_and_discards_all_attributes_without_losing_geometry() {
+        let nodes = nodes_with_valid_then_broken_attributes();
+        let strict = Mapper::new(
+            BrepSourceFormat::Text,
+            "SCH_TEST",
+            &nodes,
+            RoleAccess::Named,
+        )
+        .map();
+        assert_eq!(
+            strict.err().map(|error| error.kind()),
+            Some(ErrorKind::InvalidBrepReference)
+        );
+
+        let mut valid_nodes = nodes.clone();
+        valid_nodes.retain(|node| node.index != 10);
+        let valid = Mapper::new(
+            BrepSourceFormat::Text,
+            "SCH_TEST",
+            &valid_nodes,
+            RoleAccess::Named,
+        )
+        .map_with_metadata_recovery()
+        .expect("valid semantic attributes remain mapped");
+        assert_eq!(valid.attributes.len(), 1);
+        assert_eq!(valid.bodies[0].attributes, [0]);
+
+        let geometry_nodes = wire_acorn_nodes();
+        let geometry = Mapper::new(
+            BrepSourceFormat::Text,
+            "SCH_TEST",
+            &geometry_nodes,
+            RoleAccess::Named,
+        )
+        .map()
+        .expect("geometry-only fixture maps");
+        let recovered = Mapper::new(
+            BrepSourceFormat::Text,
+            "SCH_TEST",
+            &nodes,
+            RoleAccess::Named,
+        )
+        .map_with_metadata_recovery()
+        .expect("attribute errors are recoverable");
+
+        assert_eq!(recovered.bodies, geometry.bodies);
+        assert_eq!(recovered.regions, geometry.regions);
+        assert_eq!(recovered.shells, geometry.shells);
+        assert_eq!(recovered.faces, geometry.faces);
+        assert_eq!(recovered.vertices, geometry.vertices);
+        assert_eq!(recovered.points, geometry.points);
+        assert_eq!(recovered.topology, geometry.topology);
+        assert_eq!(recovered.complete, geometry.complete);
+        assert!(recovered.attributes.is_empty());
+        assert!(recovered
+            .bodies
+            .iter()
+            .all(|body| body.attributes.is_empty()));
+        assert_eq!(recovered.diagnostics.len(), 1);
+        assert_eq!(
+            recovered.diagnostics[0].code,
+            "metadata.attribute_decode_failed"
+        );
+        assert_eq!(recovered.diagnostics[0].source.node_index, 10);
+        assert!(recovered.diagnostics[0].message.contains("unresolved"));
+    }
+
+    #[test]
+    fn attribute_recovery_uses_the_shared_diagnostic_limit() {
+        let mut nodes = nodes_with_valid_then_broken_attributes();
+        nodes.push(node(11, 200, "FUTURE_CURVE", common_curve_fields(1)));
+        let error = Mapper::new(
+            BrepSourceFormat::Text,
+            "SCH_TEST",
+            &nodes,
+            RoleAccess::Named,
+        )
+        .with_max_diagnostics(1)
+        .map_with_metadata_recovery()
+        .expect_err("geometry and metadata diagnostics share the cap");
+
+        assert_eq!(error.kind(), ErrorKind::LimitExceeded);
+        assert_eq!(
+            error.details(),
+            &ErrorDetails::LimitExceeded {
+                resource: "diagnostics",
+                actual: 2,
+                limit: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn metadata_recovery_discards_broken_assembly_group_and_preserves_owner_integrity() {
+        let valid_nodes = nodes_with_assembly_owned_attributes(None);
+        let valid = Mapper::new(
+            BrepSourceFormat::Binary,
+            "SCH_TEST",
+            &valid_nodes,
+            RoleAccess::Named,
+        )
+        .map_with_metadata_recovery()
+        .expect("valid assembly metadata maps");
+        assert_eq!(valid.assemblies.len(), 2);
+        assert_eq!(valid.instances.len(), 2);
+        assert_eq!(valid.attributes[0].owner, AttributeOwner::Assembly(0));
+        assert_eq!(valid.attributes[1].owner, AttributeOwner::Instance(0));
+
+        let geometry_nodes = wire_acorn_nodes();
+        let geometry = Mapper::new(
+            BrepSourceFormat::Binary,
+            "SCH_TEST",
+            &geometry_nodes,
+            RoleAccess::Named,
+        )
+        .map()
+        .expect("geometry-only fixture maps");
+
+        for failing_node in [6, 10, 7] {
+            let nodes = nodes_with_assembly_owned_attributes(Some(failing_node));
+            let strict = Mapper::new(
+                BrepSourceFormat::Binary,
+                "SCH_TEST",
+                &nodes,
+                RoleAccess::Named,
+            )
+            .map();
+            assert_eq!(
+                strict.err().map(|error| error.kind()),
+                Some(ErrorKind::InvalidBrepField)
+            );
+
+            let recovered = Mapper::new(
+                BrepSourceFormat::Binary,
+                "SCH_TEST",
+                &nodes,
+                RoleAccess::Named,
+            )
+            .map_with_metadata_recovery()
+            .expect("assembly metadata errors are recoverable");
+            assert!(recovered.assemblies.is_empty());
+            assert!(recovered.instances.is_empty());
+            assert_eq!(recovered.bodies, geometry.bodies);
+            assert_eq!(recovered.regions, geometry.regions);
+            assert_eq!(recovered.shells, geometry.shells);
+            assert_eq!(recovered.vertices, geometry.vertices);
+            assert_eq!(recovered.points, geometry.points);
+            assert_eq!(recovered.topology, geometry.topology);
+            assert_eq!(recovered.complete, geometry.complete);
+            assert_eq!(recovered.attributes.len(), 2);
+            assert!(matches!(
+                &recovered.attributes[0].owner,
+                AttributeOwner::Other(source) if source.node_index == 6
+            ));
+            assert!(matches!(
+                &recovered.attributes[1].owner,
+                AttributeOwner::Other(source) if source.node_index == 7
+            ));
+            assert_eq!(recovered.diagnostics.len(), 1);
+            assert_eq!(
+                recovered.diagnostics[0].code,
+                "metadata.assembly_decode_failed"
+            );
+            assert_eq!(recovered.diagnostics[0].source.node_index, failing_node);
+        }
+    }
+
+    #[test]
+    fn assembly_recovery_diagnostic_uses_the_shared_limit() {
+        let mut nodes = nodes_with_assembly_owned_attributes(Some(6));
+        nodes.push(node(30, 200, "FUTURE_CURVE", common_curve_fields(1)));
+        let error = Mapper::new(
+            BrepSourceFormat::Binary,
+            "SCH_TEST",
+            &nodes,
+            RoleAccess::Named,
+        )
+        .with_max_diagnostics(1)
+        .map_with_metadata_recovery()
+        .expect_err("geometry and assembly diagnostics share the cap");
+
+        assert_eq!(error.kind(), ErrorKind::LimitExceeded);
+        assert_eq!(
+            error.details(),
+            &ErrorDetails::LimitExceeded {
+                resource: "diagnostics",
+                actual: 2,
+                limit: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn invalid_topology_precedes_metadata_diagnostic_limit() {
+        let mut nodes = sheet_nodes(b'S');
+        let mut assemblies = assembly_nodes(1, 1, 8, 2.0);
+        let root = assemblies
+            .iter_mut()
+            .find(|node| node.index == 6)
+            .expect("root assembly exists");
+        root.fields
+            .iter_mut()
+            .find(|field| field.definition.name == "type")
+            .expect("root assembly type exists")
+            .values = vec![FieldValue::UnsignedByte(99)];
+        nodes.extend(assemblies);
+        nodes.push(node(30, 200, "FUTURE_CURVE", common_curve_fields(4)));
+
+        let error = Mapper::new(
+            BrepSourceFormat::Binary,
+            "SCH_TEST",
+            &nodes,
+            RoleAccess::Named,
+        )
+        .with_max_diagnostics(1)
+        .map_with_metadata_recovery()
+        .expect_err("invalid topology takes precedence over metadata diagnostics");
+
+        assert_eq!(error.kind(), ErrorKind::InvalidBrepTopology);
     }
 
     #[test]
