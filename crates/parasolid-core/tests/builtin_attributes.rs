@@ -34,6 +34,10 @@ const VALID_BODY_WITH_ATTRIBUTE: &str = concat!(
     "1 0 ",
 );
 
+#[allow(
+    clippy::expect_used,
+    reason = "Fixture invariants must hold for the test to be meaningful."
+)]
 fn node(
     profile: &parasolid_core::BuiltinSchemaProfile,
     kind: u16,
@@ -87,7 +91,7 @@ fn node(
 fn default_value(kind: FieldType) -> FieldValue {
     match kind {
         FieldType::UnsignedByte => FieldValue::UnsignedByte(0),
-        FieldType::Character => FieldValue::Character(0),
+        FieldType::Character | FieldType::OpaquePointer => FieldValue::Character(0),
         FieldType::Logical => FieldValue::Logical(false),
         FieldType::ShortInteger => FieldValue::ShortInteger(None),
         FieldType::UnicodeCharacter => FieldValue::UnicodeCharacter(0),
@@ -99,7 +103,6 @@ fn default_value(kind: FieldType) -> FieldValue {
         FieldType::Vector => FieldValue::Vector([None; 3]),
         FieldType::Box3 => FieldValue::Box3([None; 6]),
         FieldType::IntersectionPoint => FieldValue::IntersectionPoint([None; 3]),
-        FieldType::OpaquePointer => FieldValue::Character(0),
     }
 }
 
@@ -133,6 +136,10 @@ fn encoded_nodes(profile: &parasolid_core::BuiltinSchemaProfile) -> Vec<RawNode>
     ]
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "Fixture invariants must hold for the test to be meaningful."
+)]
 fn padded_attribute_nodes(
     profile: &parasolid_core::BuiltinSchemaProfile,
     user_fields: bool,
@@ -156,6 +163,10 @@ fn padded_attribute_nodes(
     nodes
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "Fixture invariants must hold for the test to be meaningful."
+)]
 fn semantic_owner_source_index(model: &BrepModel, owner: &AttributeOwner) -> u32 {
     let source_index = match owner {
         AttributeOwner::Assembly(id) => model
@@ -223,6 +234,10 @@ fn semantic_owner_source_index(model: &BrepModel, owner: &AttributeOwner) -> u32
     source_index.expect("mapped attribute owner resolves to a source node")
 }
 
+#[allow(
+    clippy::panic,
+    reason = "Unexpected fixture variants must fail the test with context."
+)]
 fn assert_semantic_attributes_match_raw(
     model: &BrepModel,
     raw: &parasolid_core::brep::BrepAttributes,
@@ -245,17 +260,24 @@ fn assert_semantic_attributes_match_raw(
                 (AttributeField::Integers(semantic), AttributeFieldData::Integers(raw)) => {
                     assert_eq!(semantic, raw);
                 }
-                (semantic, raw) => panic!(
-                    "unexpected attribute field mapping: {semantic:?} / {raw:?}"
-                ),
+                (semantic, raw) => {
+                    panic!("unexpected attribute field mapping: {semantic:?} / {raw:?}")
+                }
             }
         }
     }
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "Fixture invariants must hold for the test to be meaningful."
+)]
 fn encode_xt(nodes: &[RawNode]) -> Vec<u8> {
     let user_field_size = nodes.first().map_or(0, |node| node.user_fields.len());
-    let mut output = support::xt_header(KEY, user_field_size as i32);
+    let mut output = support::xt_header(
+        KEY,
+        i32::try_from(user_field_size).expect("fixture user field count fits i32"),
+    );
     for node in nodes {
         output.extend_from_slice(format!("{} ", node.node_type).as_bytes());
         if let Some(length) = node.variable_length {
@@ -434,6 +456,10 @@ fn decodes_attributes_with_the_reviewed_13006_profile() -> Result<(), Box<dyn st
 }
 
 #[test]
+#[allow(
+    clippy::similar_names,
+    reason = "The test compares corresponding XT and XB values."
+)]
 fn brep_model_retains_xt_and_xb_attributes_from_a_valid_body()
 -> Result<(), Box<dyn std::error::Error>> {
     let profile = legacy_standard_keys()?
@@ -478,6 +504,10 @@ fn brep_model_retains_xt_and_xb_attributes_from_a_valid_body()
 }
 
 #[test]
+#[allow(
+    clippy::similar_names,
+    reason = "The test compares corresponding XT and XB values."
+)]
 fn malformed_attribute_references_recover_without_losing_xt_or_xb_geometry()
 -> Result<(), Box<dyn std::error::Error>> {
     let profile = legacy_standard_keys()?
@@ -529,7 +559,11 @@ fn assert_attribute_recovery_preserves_geometry(valid: &BrepModel, recovered: &B
     let mut valid_faces = valid.faces.clone();
     let mut recovered_faces = recovered.faces.clone();
     assert!(valid_faces.iter().any(|face| !face.attributes.is_empty()));
-    assert!(recovered_faces.iter().all(|face| face.attributes.is_empty()));
+    assert!(
+        recovered_faces
+            .iter()
+            .all(|face| face.attributes.is_empty())
+    );
     for face in &mut valid_faces {
         face.attributes.clear();
     }
@@ -546,8 +580,10 @@ fn assert_attribute_recovery_preserves_geometry(valid: &BrepModel, recovered: &B
     assert_eq!(recovered.surfaces, valid.surfaces);
     assert!(recovered.attributes.is_empty());
     assert_eq!(recovered.complete, valid.complete);
-    assert!(recovered
-        .diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.code == "metadata.attribute_decode_failed"));
+    assert!(
+        recovered
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.code == "metadata.attribute_decode_failed")
+    );
 }

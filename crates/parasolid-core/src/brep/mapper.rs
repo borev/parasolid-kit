@@ -5737,6 +5737,11 @@ mod tests {
         }
 
         #[test]
+        #[allow(
+            clippy::float_cmp,
+            clippy::panic,
+            reason = "The fixture checks exact transforms and requires an embedded mesh."
+        )]
         fn maps_embedded_mesh_as_face_surface_without_guessing_index_origin() {
             let mut nodes = mesh_and_face_nodes();
             nodes[0]
