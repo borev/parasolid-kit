@@ -140,7 +140,7 @@ SDIST_ROOT_DIRECTORIES = {
     "LICENSES",
     "corpus",
     "crates",
-    "upstream-docs",
+    "docs",
     "fuzz",
     "scripts",
     "src",
@@ -185,7 +185,7 @@ BUILTIN_SOURCE_FILES = (
     "crates/parasolid-core/src/schema/profiles/mod.rs",
     "crates/parasolid-core/src/schema/profile.rs",
     "crates/parasolid-core/src/brep/profile_roles.rs",
-    "upstream-docs/builtin-profiles.md",
+    "docs/builtin-profiles.md",
 )
 
 _REQUIREMENT = re.compile(
@@ -722,9 +722,9 @@ def verify_sdist(path: Path, *, require_license: bool = False) -> dict[str, obje
         "corpus/expected/release-v1/values.x_b.json",
         "crates/parasolid-core/Cargo.toml",
         "crates/parasolid-python/Cargo.toml",
-        "upstream-docs/api.md",
+        "docs/api.md",
         *BUILTIN_SOURCE_FILES,
-        "upstream-docs/format-support.md",
+        "docs/format-support.md",
         "fuzz/Cargo.lock",
         "fuzz/Cargo.toml",
         "fuzz/fuzz_targets/inspect.rs",
