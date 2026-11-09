@@ -88,6 +88,18 @@ offset-contact cases and uses exact UV chart stations when they are present in
 the mapped chart. These bounded cases do not imply general APPLIO coverage or
 parity with the Parasolid kernel.
 
+Cylinder/cylinder callers may explicitly use
+`evaluate_cylinder_cylinder_intersection_candidate_with_source_chart_tolerance`
+when they have independently established the chart's source and topology
+ownership. Its finite, nonnegative absolute bound applies only to stored chart
+point residuals against both support cylinders and source limit locators against
+chart endpoints. It does not relax coordinate precision checks, station
+construction, root solving, seed agreement, or interior result validation. An
+exact chart station returns the stored chart point unchanged, even when its
+support residual is within the supplied bound. The existing evaluator and
+generic dispatch remain strict. This opt-in remains a bounded local candidate;
+it does not establish global branch uniqueness or native-kernel acceptance.
+
 Lengths and identifiers retain their Parasolid source meaning. Byte ranges are
 relative to the complete byte slice supplied to the parser. Embedding applications
 must track container/decompression offsets and any unit or public-ID conversion.

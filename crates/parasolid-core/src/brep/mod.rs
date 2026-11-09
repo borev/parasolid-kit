@@ -58,6 +58,7 @@ pub use intersection_eval::{
     evaluate_cone_cylinder_intersection_candidate,
     evaluate_cone_cylinder_intersection_candidate_with_reversed_mapped_axis,
     evaluate_cylinder_cylinder_intersection_candidate,
+    evaluate_cylinder_cylinder_intersection_candidate_with_source_chart_tolerance,
     evaluate_cylinder_torus_intersection_candidate, evaluate_intersection_candidate,
     evaluate_plane_cylinder_intersection_candidate, evaluate_plane_plane_intersection_candidate,
     evaluate_plane_xt_cone_intersection_candidate,

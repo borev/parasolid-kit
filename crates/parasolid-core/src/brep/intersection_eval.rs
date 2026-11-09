@@ -3427,6 +3427,45 @@ pub fn evaluate_cylinder_cylinder_intersection_candidate(
     curve: &CurveKind,
     parameter: f64,
 ) -> Result<IntersectionCurveEvaluation, IntersectionEvaluationError> {
+    evaluate_cylinder_cylinder_intersection_candidate_impl(brep, curve, parameter, None)
+}
+
+/// Evaluates a cylinder/cylinder candidate with a caller-established source chart input bound.
+///
+/// The bound applies only to stored chart point support residuals and their source limit
+/// locators. It does not change numerical guards, station construction, solver acceptance, or
+/// branch selection. Callers must establish source and topology ownership before using it. An
+/// exact chart station still returns the stored chart point unchanged; this remains a bounded
+/// local candidate, not a global branch or native-kernel uniqueness claim.
+///
+/// # Errors
+/// Returns an error when the tolerance is non-finite or negative, or when the support pair,
+/// chart, parameter, or selected root is invalid.
+pub fn evaluate_cylinder_cylinder_intersection_candidate_with_source_chart_tolerance(
+    brep: &BrepModel,
+    curve: &CurveKind,
+    parameter: f64,
+    source_chart_tolerance: f64,
+) -> Result<IntersectionCurveEvaluation, IntersectionEvaluationError> {
+    if !source_chart_tolerance.is_finite() || source_chart_tolerance < 0.0 {
+        return Err(IntersectionEvaluationError::InvalidInput(
+            "source chart tolerance must be finite and nonnegative",
+        ));
+    }
+    evaluate_cylinder_cylinder_intersection_candidate_impl(
+        brep,
+        curve,
+        parameter,
+        Some(source_chart_tolerance),
+    )
+}
+
+fn evaluate_cylinder_cylinder_intersection_candidate_impl(
+    brep: &BrepModel,
+    curve: &CurveKind,
+    parameter: f64,
+    source_chart_tolerance: Option<f64>,
+) -> Result<IntersectionCurveEvaluation, IntersectionEvaluationError> {
     let CurveKind::Intersection {
         surfaces,
         chart_parameters,
@@ -3514,6 +3553,9 @@ pub fn evaluate_cylinder_cylinder_intersection_candidate(
         .fold(0.0_f64, |scale, value| scale.max(value.abs()));
     let local_scale = radius_a.max(*radius_b);
     let tolerance = 4.0 * EPS_FACTOR * local_scale;
+    let chart_input_tolerance = source_chart_tolerance.map_or(tolerance, |source_tolerance| {
+        tolerance.max(source_tolerance)
+    });
     if f64::EPSILON * coordinate_scale > tolerance {
         return Err(IntersectionEvaluationError::Unsupported(
             "cylinder/cylinder coordinates exceed the supported local precision",
@@ -3527,9 +3569,9 @@ pub fn evaluate_cylinder_cylinder_intersection_candidate(
         if !start_help
             || !end_help
             || start_locator != end_locator
-            || norm(sub(start_locator, first_point)) > tolerance
-            || norm(sub(end_locator, last_point)) > tolerance
-            || norm(sub(first_point, last_point)) > tolerance
+            || norm(sub(start_locator, first_point)) > chart_input_tolerance
+            || norm(sub(end_locator, last_point)) > chart_input_tolerance
+            || norm(sub(first_point, last_point)) > chart_input_tolerance
         {
             return Err(IntersectionEvaluationError::Unsupported(
                 "cylinder/cylinder help limits must identify the same closed chart endpoint",
@@ -3537,8 +3579,8 @@ pub fn evaluate_cylinder_cylinder_intersection_candidate(
         }
     } else if *start_limit_kind != Some(IntersectionLimitKind::Limit)
         || *end_limit_kind != Some(IntersectionLimitKind::Limit)
-        || norm(sub(start_points[0].to_array(), first_point)) > tolerance
-        || norm(sub(end_points[0].to_array(), last_point)) > tolerance
+        || norm(sub(start_points[0].to_array(), first_point)) > chart_input_tolerance
+        || norm(sub(end_points[0].to_array(), last_point)) > chart_input_tolerance
     {
         return Err(IntersectionEvaluationError::Unsupported(
             "intersection limits do not match the chart endpoints within local precision",
@@ -3595,7 +3637,9 @@ pub fn evaluate_cylinder_cylinder_intersection_candidate(
         let (_, radial_b) = radial_normal(origin_b, axis_b, *point).ok_or(
             IntersectionEvaluationError::InvalidInput("invalid second cylinder radial"),
         )?;
-        if (radial_a - radius_a).abs() > tolerance || (radial_b - radius_b).abs() > tolerance {
+        if (radial_a - radius_a).abs() > chart_input_tolerance
+            || (radial_b - radius_b).abs() > chart_input_tolerance
+        {
             return Err(IntersectionEvaluationError::InvalidInput(
                 "intersection chart point is not on both support cylinders",
             ));
@@ -6228,6 +6272,256 @@ mod tests {
         assert!(matches!(
             evaluate_cylinder_cylinder_intersection_candidate(&brep, &terminator_curve, parameter),
             Err(IntersectionEvaluationError::Unsupported(_))
+        ));
+    }
+
+    #[test]
+    #[allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        clippy::float_cmp,
+        reason = "fixture setup and exact chart-station equality are intentional"
+    )]
+    fn cylinder_cylinder_source_chart_tolerance_is_opt_in_and_input_only() {
+        let (brep, mut curve, _) = perpendicular_cylinder_fixture(&[0.1, 0.4, 0.7]);
+        let source_tolerance = 2.0e-12;
+        let CurveKind::Intersection {
+            chart_points,
+            start_points,
+            ..
+        } = &mut curve
+        else {
+            unreachable!("fixture uses an intersection")
+        };
+        let mut source_point = chart_points[0].to_array();
+        source_point[0] += 1.0e-12;
+        chart_points[0] = Vector3::from_array(source_point);
+        start_points[0] = chart_points[0];
+
+        assert_eq!(
+            evaluate_cylinder_cylinder_intersection_candidate(&brep, &curve, 10.0),
+            Err(IntersectionEvaluationError::InvalidInput(
+                "intersection chart point is not on both support cylinders"
+            ))
+        );
+        assert!(matches!(
+            evaluate_cylinder_cylinder_intersection_candidate_with_source_chart_tolerance(
+                &brep,
+                &curve,
+                10.0,
+                source_tolerance,
+            ),
+            Ok(IntersectionCurveEvaluation { point, .. }) if point == source_point
+        ));
+        assert!(matches!(
+            evaluate_cylinder_cylinder_intersection_candidate_with_source_chart_tolerance(
+                &brep,
+                &curve,
+                10.0,
+                source_tolerance / 4.0,
+            ),
+            Err(IntersectionEvaluationError::InvalidInput(
+                "intersection chart point is not on both support cylinders"
+            ))
+        ));
+
+        let mut beyond_bound = curve.clone();
+        let CurveKind::Intersection {
+            chart_points,
+            start_points,
+            ..
+        } = &mut beyond_bound
+        else {
+            unreachable!("fixture uses an intersection")
+        };
+        let mut point = chart_points[0].to_array();
+        point[0] += 2.0e-12;
+        chart_points[0] = Vector3::from_array(point);
+        start_points[0] = chart_points[0];
+        assert!(matches!(
+            evaluate_cylinder_cylinder_intersection_candidate_with_source_chart_tolerance(
+                &brep,
+                &beyond_bound,
+                10.0,
+                source_tolerance,
+            ),
+            Err(IntersectionEvaluationError::InvalidInput(
+                "intersection chart point is not on both support cylinders"
+            ))
+        ));
+
+        for invalid_tolerance in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY, -1.0] {
+            assert_eq!(
+                evaluate_cylinder_cylinder_intersection_candidate_with_source_chart_tolerance(
+                    &brep,
+                    &curve,
+                    10.0,
+                    invalid_tolerance,
+                ),
+                Err(IntersectionEvaluationError::InvalidInput(
+                    "source chart tolerance must be finite and nonnegative"
+                ))
+            );
+        }
+
+        let CurveKind::Intersection { chart_points, .. } = &curve else {
+            unreachable!("fixture uses an intersection")
+        };
+        let chord_length = norm(sub(chart_points[1].to_array(), chart_points[0].to_array()));
+        let interior =
+            evaluate_cylinder_cylinder_intersection_candidate_with_source_chart_tolerance(
+                &brep,
+                &curve,
+                10.0 + chord_length * 0.5,
+                source_tolerance,
+            )
+            .expect("interior evaluation retains the existing strict cylinder solver");
+        let solver_tolerance = 4.0 * EPS_FACTOR;
+        assert!((interior.point[1].hypot(interior.point[2]) - 1.0).abs() <= solver_tolerance);
+        assert!((interior.point[0].hypot(interior.point[2]) - 1.0).abs() <= solver_tolerance);
+
+        let (brep, mut limit_curve, _) = perpendicular_cylinder_fixture(&[0.1, 0.4, 0.7]);
+        let CurveKind::Intersection { chart_points, .. } = &limit_curve else {
+            unreachable!("fixture uses an intersection")
+        };
+        let chart_start = chart_points[0].to_array();
+        let chart_end = chart_points[1].to_array();
+        let CurveKind::Intersection { start_points, .. } = &mut limit_curve else {
+            unreachable!("fixture uses an intersection")
+        };
+        let mut locator = chart_start;
+        locator[0] += 1.0e-12;
+        start_points[0] = Vector3::from_array(locator);
+        assert!(matches!(
+            evaluate_cylinder_cylinder_intersection_candidate(&brep, &limit_curve, 10.0),
+            Err(IntersectionEvaluationError::Unsupported(
+                "intersection limits do not match the chart endpoints within local precision"
+            ))
+        ));
+        assert_eq!(
+            evaluate_cylinder_cylinder_intersection_candidate_with_source_chart_tolerance(
+                &brep,
+                &limit_curve,
+                10.0,
+                source_tolerance,
+            )
+            .unwrap()
+            .point,
+            chart_start
+        );
+        let mut limit_beyond_bound = limit_curve.clone();
+        let CurveKind::Intersection { start_points, .. } = &mut limit_beyond_bound else {
+            unreachable!("fixture uses an intersection")
+        };
+        let mut locator = start_points[0].to_array();
+        locator[0] += 2.0e-12;
+        start_points[0] = Vector3::from_array(locator);
+        assert!(matches!(
+            evaluate_cylinder_cylinder_intersection_candidate_with_source_chart_tolerance(
+                &brep,
+                &limit_beyond_bound,
+                10.0,
+                source_tolerance,
+            ),
+            Err(IntersectionEvaluationError::Unsupported(
+                "intersection limits do not match the chart endpoints within local precision"
+            ))
+        ));
+        let locator_chord = norm(sub(chart_end, chart_start));
+        let locator_interior =
+            evaluate_cylinder_cylinder_intersection_candidate_with_source_chart_tolerance(
+                &brep,
+                &limit_curve,
+                10.0 + locator_chord * 0.5,
+                source_tolerance,
+            )
+            .expect("locator tolerance does not widen the interior solver");
+        assert!(
+            (locator_interior.point[1].hypot(locator_interior.point[2]) - 1.0).abs()
+                <= solver_tolerance
+        );
+        assert!(
+            (locator_interior.point[0].hypot(locator_interior.point[2]) - 1.0).abs()
+                <= solver_tolerance
+        );
+
+        let (mut help_brep, mut help_curve, _) = perpendicular_cylinder_fixture(&[0.1, 0.4, 0.7]);
+        help_brep.surfaces[0].kind = SurfaceKind::Cylinder {
+            point: Vector3::from_array([0.0; 3]),
+            axis: Vector3::from_array([0.0, 1.0, 0.0]),
+            radius: 1.0,
+            x_axis: Vector3::from_array([0.0, 0.0, 1.0]),
+        };
+        help_brep.surfaces[1].kind = SurfaceKind::Cylinder {
+            point: Vector3::from_array([0.0; 3]),
+            axis: Vector3::from_array([1.0, 0.0, 0.0]),
+            radius: 2.0,
+            x_axis: Vector3::from_array([0.0, 1.0, 0.0]),
+        };
+        let closed_points: Vec<_> = (0..=16)
+            .map(|index| {
+                let angle = -std::f64::consts::TAU * f64::from(index) / 16.0;
+                Vector3::from_array([angle.sin(), (4.0 - angle.cos().powi(2)).sqrt(), angle.cos()])
+            })
+            .collect();
+        let CurveKind::Intersection {
+            chart_points,
+            start_limit_kind,
+            start_points,
+            end_limit_kind,
+            end_points,
+            ..
+        } = &mut help_curve
+        else {
+            unreachable!("fixture uses an intersection")
+        };
+        let chart_start = closed_points[0].to_array();
+        *chart_points = closed_points;
+        *start_limit_kind = Some(IntersectionLimitKind::Help);
+        *end_limit_kind = Some(IntersectionLimitKind::Help);
+        let mut locator = chart_start;
+        locator[0] += 1.0e-12;
+        *start_points = vec![Vector3::from_array(locator)];
+        *end_points = start_points.clone();
+        assert!(matches!(
+            evaluate_cylinder_cylinder_intersection_candidate(&help_brep, &help_curve, 10.0,),
+            Err(IntersectionEvaluationError::Unsupported(
+                "cylinder/cylinder help limits must identify the same closed chart endpoint"
+            ))
+        ));
+        assert_eq!(
+            evaluate_cylinder_cylinder_intersection_candidate_with_source_chart_tolerance(
+                &help_brep,
+                &help_curve,
+                10.0,
+                source_tolerance,
+            )
+            .unwrap()
+            .point,
+            chart_start
+        );
+        let CurveKind::Intersection {
+            start_points,
+            end_points,
+            ..
+        } = &mut help_curve
+        else {
+            unreachable!("fixture uses an intersection")
+        };
+        let too_far =
+            Vector3::from_array([chart_start[0] + 3.0e-12, chart_start[1], chart_start[2]]);
+        *start_points = vec![too_far];
+        *end_points = vec![too_far];
+        assert!(matches!(
+            evaluate_cylinder_cylinder_intersection_candidate_with_source_chart_tolerance(
+                &help_brep,
+                &help_curve,
+                10.0,
+                source_tolerance,
+            ),
+            Err(IntersectionEvaluationError::Unsupported(
+                "cylinder/cylinder help limits must identify the same closed chart endpoint"
+            ))
         ));
     }
 
