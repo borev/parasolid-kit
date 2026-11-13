@@ -256,6 +256,14 @@ impl BuiltinSchemaProfile {
             unsupported.extend(member.unsupported_base_types.iter().copied());
             absent.extend(member.absent_base_types.iter().copied());
         }
+        if provider_schema == "13006" {
+            // Above the base's type table; see `SCH13006_FACET_TYPES`.
+            absent.extend(
+                crate::schema::profiles::SCH13006_FACET_TYPES
+                    .iter()
+                    .copied(),
+            );
+        }
         conflicting.extend(
             definitions
                 .keys()
@@ -324,7 +332,7 @@ impl BuiltinSchemaProfile {
     /// Iterate over exact accepted transmit schema keys in lexical order.
     ///
     /// A family profile accepts keys by family instead and returns no exact key.
-    #[must_use]
+    #[must_use = "iterators are lazy and do nothing unless consumed"]
     pub fn accepted_schema_keys(&self) -> impl ExactSizeIterator<Item = &SchemaKey> {
         self.accepted_schema_keys.iter()
     }
@@ -349,13 +357,13 @@ impl BuiltinSchemaProfile {
     }
 
     /// Iterate over node types excluded from a family because its members disagree.
-    #[must_use]
+    #[must_use = "iterators are lazy and do nothing unless consumed"]
     pub fn conflicting_types(&self) -> impl ExactSizeIterator<Item = u16> + '_ {
         self.conflicting_types.iter().copied()
     }
 
     /// Iterate over reviewed definitions in ascending node-type order.
-    #[must_use]
+    #[must_use = "iterators are lazy and do nothing unless consumed"]
     pub fn definitions(&self) -> impl ExactSizeIterator<Item = &TypeDefinition> {
         self.definitions.values()
     }
@@ -367,13 +375,13 @@ impl BuiltinSchemaProfile {
     }
 
     /// Iterate over confirmed base types whose definitions remain unsupported.
-    #[must_use]
+    #[must_use = "iterators are lazy and do nothing unless consumed"]
     pub fn unsupported_base_types(&self) -> impl ExactSizeIterator<Item = u16> + '_ {
         self.unsupported_base_types.iter().copied()
     }
 
     /// Iterate over node types confirmed absent from the selected base schema.
-    #[must_use]
+    #[must_use = "iterators are lazy and do nothing unless consumed"]
     pub fn absent_base_types(&self) -> impl ExactSizeIterator<Item = u16> + '_ {
         self.absent_base_types.iter().copied()
     }
@@ -617,13 +625,13 @@ impl BuiltinProfileRegistry {
     }
 
     /// Iterate over exact profiles in insertion order.
-    #[must_use]
+    #[must_use = "iterators are lazy and do nothing unless consumed"]
     pub fn profiles(&self) -> impl ExactSizeIterator<Item = &BuiltinSchemaProfile> {
         self.profiles.iter()
     }
 
     /// Iterate over derived family profiles in family-ID order.
-    #[must_use]
+    #[must_use = "iterators are lazy and do nothing unless consumed"]
     pub fn families(&self) -> impl ExactSizeIterator<Item = &BuiltinSchemaProfile> {
         self.families.iter()
     }
@@ -1296,7 +1304,7 @@ mod tests {
             family.metadata().profile_sha256,
             family_digest("90000", family.members(), family.base_members())
         );
-        assert!(family.base_members().is_empty());
+        assert_eq!(family.base_members().len(), 0);
     }
 
     #[test]
@@ -1457,7 +1465,16 @@ mod tests {
         let family = provider.profile();
         assert_eq!(family.metadata().profile_id, "family-90000-13006");
         assert_eq!(family.metadata().provider_schema, "13006");
-        assert_eq!(family.absent_base_types().collect::<Vec<_>>(), [176, 204]);
+        // A 13006 family also confirms the facet types above the base table.
+        let mut expected = vec![176, 204];
+        expected.extend(crate::schema::profiles::SCH13006_FACET_TYPES);
+        expected.sort_unstable();
+        assert_eq!(family.absent_base_types().collect::<Vec<_>>(), expected);
+        assert_eq!(provider.lookup_type("13006", 201), SchemaTypeLookup::Absent);
+        assert_eq!(
+            provider.lookup_type("13006", 230),
+            SchemaTypeLookup::Unknown
+        );
         assert_eq!(family.conflicting_types().collect::<Vec<_>>(), [45]);
         assert!(matches!(
             provider.lookup_type("13006", 12),

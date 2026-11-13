@@ -52,6 +52,7 @@ from ...brep.geometry import (
     CylinderSurface,
     IntersectionCurve,
     LineCurve,
+    MeshSurface,
     NurbsCurve,
     NurbsSurface,
     OffsetSurface,
@@ -75,6 +76,7 @@ from .intersection import (
 )
 from .model import ShapeRelationKind, SourceEntityKind
 from .topology import BuiltTopology, TopologyBuilder, _reason, _sense_sign
+from .validation import face_is_valid
 
 
 def subshapes(shape: object, kind: object) -> list:
@@ -196,10 +198,20 @@ class ParametricTopologyBuilder(TopologyBuilder):
                 self._drop_face(
                     face.id, f"edge {failed_edge} failed: {self.failed_edges[failed_edge]}"
                 )
+        try:
+            self._build_mesh_faces()
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except Exception as error:
+            if not self.partial:
+                raise
+            for face in self.model.faces:
+                if face.id not in self.face_shapes and self._is_mesh_face(face):
+                    self._drop_face(face.id, error)
         # All face pcurves must exist before a periodic seam splits shared rings.
         for step in (self._build_face, self._finish_face, self._check_face):
             for face in self.model.faces:
-                if face.id in self.dropped_faces:
+                if face.id in self.dropped_faces or face.id in self.mesh_faces:
                     continue
                 try:
                     step(face)
@@ -224,11 +236,16 @@ class ParametricTopologyBuilder(TopologyBuilder):
             **self.partial_records(),
         )
 
+    def _is_mesh_face(self, face):
+        return face.surface is not None and isinstance(
+            self.surfaces[face.surface].definition, MeshSurface
+        )
+
     def _check_face(self, face):
         shape = TopoDS.Face_s(self.context.Apply(self.face_shapes[face.id]))
-        if not BRepCheck_Analyzer(shape).IsValid():
+        if not face_is_valid(shape):
             shape = self._cover_wire_crossings(shape)
-            if not BRepCheck_Analyzer(shape).IsValid():
+            if not face_is_valid(shape):
                 if not self._sliver_orientation_only(shape):
                     raise ValueError(f"OCCT parametric face {face.id} is invalid")
                 self.operations.append("accept_sliver_face_orientation")
@@ -1275,6 +1292,10 @@ class ParametricTopologyBuilder(TopologyBuilder):
                 else:
                     a, b = sorted((a, b))
                 endpoints(curve.Value(a), curve.Value(b))
+                if vs is None and definition.start_parameter > definition.end_parameter:
+                    # A ring edge on the whole of a basis of negative sense:
+                    # the trim runs down its parameter, the built edge up it.
+                    self.reversed_edges.add(edge.id)
                 builder = (
                     BRepBuilderAPI_MakeEdge(curve, a, b)
                     if vs is None
@@ -1782,6 +1803,11 @@ class ParametricTopologyBuilder(TopologyBuilder):
         operation.SetContext(self.context)
         operation.SetPrecision(self.precision)
         operation.SetMaxTolerance(max(self.precision, Precision.Confusion_s()))
+        # A cone face bounded by one ring around its axis (a pointed cone, its
+        # apex an isolated vertex loop) needs the degenerated edge of the apex
+        # before the seam fix can close it.
+        if operation.FixPeriodicDegenerated():
+            self.operations.append("insert_degenerated_cone_apex_edge")
         if operation.FixMissingSeam():
             self.operations.append("generate_periodic_surface_seam")
         split = self._split_self_touching_loops(operation)
@@ -2218,7 +2244,7 @@ class ParametricTopologyBuilder(TopologyBuilder):
                     for face_id in available:
                         builder.Add(shape, self.face_shapes[face_id])
                     if body.kind is BodyKind.SOLID and (
-                        len(available) < len(faces) or not BRep_Tool.IsClosed_s(shape)
+                        len(available) < len(faces) or not self._shell_closed(shape, available)
                     ):
                         if not self.partial:
                             raise ValueError(f"shell {shell_id} is not closed")

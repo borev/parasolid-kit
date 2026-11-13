@@ -6,13 +6,14 @@ use parasolid_core::brep::{
     Assembly, Attribute, AttributeField, AttributeOwner, Body, BrepDiagnostic, BrepModel,
     BrepSourceFormat, CurveGeometry, CurveKind, Edge, Face, HalfEdge, Instance, InstancePart,
     IntersectionData, IntersectionLimitKind, IntersectionUvType, Loop, NurbsCurve, NurbsSurface,
-    PointGeometry, PolylineData, RawIntegerPool, RawMeshData, RawVectorPool, Region, Shell,
-    SourceNodeRef, SurfaceGeometry, SurfaceKind, Transform, TransformNode, Vector3, Vertex,
-    map_xb_brep_with_diagnostic_limit, map_xt_brep_with_diagnostic_limit,
+    MeshSurface, PointGeometry, PolylineData, RawIntegerPool, RawMeshData, RawVectorPool, Region,
+    Shell, SourceNodeRef, StoredMeshSurface, SurfaceGeometry, SurfaceKind, Transform,
+    TransformNode, Vector3, Vertex, map_xb_brep_with_diagnostic_limit,
+    map_xt_brep_with_diagnostic_limit,
 };
 use pyo3::{
     Bound, Py, PyRef, PyResult, Python, pyfunction,
-    types::{PyDict, PyDictMethods, PyList, PyListMethods},
+    types::{PyBytes, PyDict, PyDictMethods, PyList, PyListMethods},
 };
 
 use super::{CatalogType, NativeXbDocument, NativeXtDocument, error_to_python};
@@ -911,14 +912,15 @@ fn surface_kind_to_python<'py>(
             value.set_item("offset", offset)?;
         }
         SurfaceKind::Nurbs(nurbs) => nurbs_surface_to_python(py, &value, nurbs)?,
-        SurfaceKind::Mesh {
+        SurfaceKind::Mesh(mesh) => mesh_surface_to_python(py, &value, mesh)?,
+        SurfaceKind::StoredMesh(StoredMeshSurface {
             source_mesh_index,
             embedded,
             transform_index,
             transform,
             unembedded_source_fields,
-        } => {
-            value.set_item("source_mesh_index", source_mesh_index)?;
+        }) => {
+            value.set_item("source_mesh_index", *source_mesh_index)?;
             value.set_item(
                 "embedded",
                 embedded
@@ -1064,6 +1066,35 @@ fn nurbs_surface_to_python(
     value.set_item("v_knot_multiplicities", &nurbs.v_knot_multiplicities)?;
     let sources = PyList::empty(py);
     for source in &nurbs.sources {
+        sources.append(source_to_python(py, source)?)?;
+    }
+    value.set_item("sources", sources)?;
+    Ok(())
+}
+
+/// Facets cross as two packed little-endian buffers instead of a Python object
+/// per coordinate: a mesh face can hold millions of triangles.
+fn mesh_surface_to_python(
+    py: Python<'_>,
+    value: &Bound<'_, PyDict>,
+    mesh: &MeshSurface,
+) -> PyResult<()> {
+    let positions: Vec<u8> = mesh
+        .positions
+        .iter()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+    let triangles: Vec<u8> = mesh
+        .triangles
+        .iter()
+        .flat_map(|v| v.to_le_bytes())
+        .collect();
+    value.set_item("vertex_count", mesh.vertex_count())?;
+    value.set_item("triangle_count", mesh.triangle_count())?;
+    value.set_item("positions", PyBytes::new(py, &positions))?;
+    value.set_item("triangles", PyBytes::new(py, &triangles))?;
+    let sources = PyList::empty(py);
+    for source in &mesh.sources {
         sources.append(source_to_python(py, source)?)?;
     }
     value.set_item("sources", sources)?;

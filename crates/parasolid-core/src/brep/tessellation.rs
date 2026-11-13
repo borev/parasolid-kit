@@ -701,7 +701,7 @@ fn tessellate_brep_to_mesh_inner(
         if !require_explicit_uv_loops
             && matches!(
                 surf.map(|surface| &surface.kind),
-                Some(SurfaceKind::Mesh { .. })
+                Some(SurfaceKind::StoredMesh(_))
             )
         {
             let Ok(Some(triangles)) =
@@ -7384,8 +7384,8 @@ mod tests {
         BrepSourceFormat, CurveGeometry, CurveKind, Edge, Face, HalfEdge,
         IntersectionChartParameters, IntersectionLimitKind, Loop, MappedBodyChildren, NurbsCurve,
         NurbsSurface, PointGeometry, RawIntegerPool, RawMeshData, RawVectorPool, Region,
-        RegionKind, Sense, Shell, SourceNodeRef, SurfaceGeometry, SurfaceKind, SweptSurfaceData,
-        TopologyValidation, TransformNode, Vector3, Vertex,
+        RegionKind, Sense, Shell, SourceNodeRef, StoredMeshSurface, SurfaceGeometry, SurfaceKind,
+        SweptSurfaceData, TopologyValidation, TransformNode, Vector3, Vertex,
     };
 
     #[test]
@@ -7415,7 +7415,7 @@ mod tests {
             id: 2,
             sense: Sense::Positive,
             owner: None,
-            kind: SurfaceKind::Mesh {
+            kind: SurfaceKind::StoredMesh(StoredMeshSurface {
                 source_mesh_index: 3,
                 embedded: Some(RawMeshData {
                     mesh_index: 3,
@@ -7452,7 +7452,7 @@ mod tests {
                     byte_range: 0..0,
                 }),
                 unembedded_source_fields: None,
-            },
+            }),
             source,
         };
         let mut brep = BrepModel {
@@ -7497,23 +7497,24 @@ mod tests {
         assert_eq!(whole_brep_mesh.triangles, mesh.triangles);
         assert_eq!(whole_brep_mesh.normals, mesh.normals);
 
-        if let SurfaceKind::Mesh {
+        if let SurfaceKind::StoredMesh(StoredMeshSurface {
             embedded: Some(mesh),
             ..
-        } = &mut brep.surfaces[0].kind
+        }) = &mut brep.surfaces[0].kind
         {
             mesh.position_indices.values[..3].copy_from_slice(&[1, 2, 2]);
         }
         assert!(tessellate_brep_face(&brep, 1, 0.1).is_none());
-        if let SurfaceKind::Mesh {
+        if let SurfaceKind::StoredMesh(StoredMeshSurface {
             embedded: Some(mesh),
             ..
-        } = &mut brep.surfaces[0].kind
+        }) = &mut brep.surfaces[0].kind
         {
             mesh.position_indices.values[..3].copy_from_slice(&[0, 1, 3]);
         }
         assert!(tessellate_brep_face(&brep, 1, 0.1).is_none());
-        let SurfaceKind::Mesh { embedded, .. } = &mut brep.surfaces[0].kind else {
+        let SurfaceKind::StoredMesh(StoredMeshSurface { embedded, .. }) = &mut brep.surfaces[0].kind
+        else {
             unreachable!();
         };
         *embedded = None;

@@ -39,6 +39,7 @@ from .geometry import (
     RawVectorPool,
     SphereSurface,
     SpunSurface,
+    StoredMeshSurface,
     SurfaceDefinition,
     SurfaceGeometry,
     SurfaceKind,
@@ -572,7 +573,7 @@ def _surface_definition(kind: SurfaceKind, value: Mapping[str, Any]) -> SurfaceD
             cos_half_angle=_float(value, "cos_half_angle"),
             x_axis=_vector(value, "x_axis"),
         )
-    if kind is SurfaceKind.MESH:
+    if kind is SurfaceKind.STORED_MESH:
         source_fields = value.get("unembedded_source_fields")
         if source_fields is not None:
             if not isinstance(source_fields, list):
@@ -582,7 +583,7 @@ def _surface_definition(kind: SurfaceKind, value: Mapping[str, Any]) -> SurfaceD
             )
         embedded = value.get("embedded")
         transform = value.get("transform")
-        return MeshSurface(
+        return StoredMeshSurface(
             source_mesh_index=_int(value, "source_mesh_index"),
             embedded=None if embedded is None else _raw_mesh(_mapping(embedded, "embedded mesh")),
             transform_index=_optional_int(value, "transform_index"),
@@ -646,7 +647,28 @@ def _surface_definition(kind: SurfaceKind, value: Mapping[str, Any]) -> SurfaceD
         )
     if kind is SurfaceKind.NURBS:
         return _nurbs_surface(value)
+    if kind is SurfaceKind.MESH:
+        return _mesh_surface(value)
     return UnsupportedGeometry(type_name=_str(value, "type_name"))
+
+
+def _mesh_surface(value: Mapping[str, Any]) -> MeshSurface:
+    vertex_count, triangle_count = _int(value, "vertex_count"), _int(value, "triangle_count")
+    positions, triangles = value.get("positions"), value.get("triangles")
+    if (
+        not isinstance(positions, bytes)
+        or not isinstance(triangles, bytes)
+        or len(positions) != vertex_count * 24
+        or len(triangles) != triangle_count * 12
+    ):
+        raise TypeError("native mesh surface buffers do not match their counts")
+    return MeshSurface(
+        vertex_count=vertex_count,
+        triangle_count=triangle_count,
+        positions=positions,
+        triangles=triangles,
+        sources=tuple(_source(item) for item in _list(value, "sources")),
+    )
 
 
 def _nurbs_surface(value: Mapping[str, Any]) -> NurbsSurface:

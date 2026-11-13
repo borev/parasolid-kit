@@ -113,8 +113,8 @@ impl RoleAccess {
                         && *profile_revision == 3
                         && key == "SCH_3401212_34101_13006"
                         && profile_sha256 == crate::schema::profiles::ICAD_V34_PROFILE_SHA256)
-                    || (profile_id == "solidworks-sch37102-13006-r3"
-                        && *profile_revision == 3
+                    || (profile_id == "solidworks-sch37102-13006-r4"
+                        && *profile_revision == 4
                         && key == "SCH_3701229_37102_13006"
                         && profile_sha256
                             == crate::schema::profiles::SOLIDWORKS_PROFILE_SHA256)
@@ -276,6 +276,11 @@ impl RoleAccess {
                     90 if matches!(self, Self::TopsolidCatalog) => "GROUP",
                     91 if matches!(self, Self::TopsolidCatalog) => "MEMBER_OF_GROUP",
                     98 => "UNICODE_VALUES",
+                    _ if matches!(self, Self::OnshapeSch30000 | Self::Sch13006)
+                        && is_embedded_mesh(node) =>
+                    {
+                        "MESH"
+                    }
                     _ => "", // List types cannot acquire roles from their names.
                 }
             }
@@ -302,6 +307,10 @@ impl RoleAccess {
                 node.fields.iter().find(|f| f.definition.name == role)
             }
             Self::Sch13006 if node.node_type == 204 => intersection_data_field(node, role),
+            // A type absent from the base carries its own field names (facets).
+            Self::Sch13006 if node.definition.source == SchemaSource::EmbeddedFull => {
+                node.fields.iter().find(|f| f.definition.name == role)
+            }
             // Only copied/unchanged base fields acquire these identities; the
             // resolution check below prevents inserted names from claiming roles.
             Self::Sch13006 => field_roles(node.node_type)
@@ -342,6 +351,7 @@ impl RoleAccess {
             }
             Self::Sch13006 => {
                 matches!(node.node_type, 50..=54 | 56 | 59 | 60 | 67 | 68 | 124)
+                    || is_embedded_mesh(node)
             }
             Self::TopsolidCatalog | Self::Sch3600188 => {
                 matches!(node.node_type, 50..=54 | 56 | 59 | 60 | 68 | 124)
@@ -353,6 +363,12 @@ impl RoleAccess {
                         .is_some_and(|f| f.definition.pointer_class == 1007)
             }
         }
+    }
+
+    /// Whether the node's field names are its own: a caller catalog names every
+    /// type; a built-in profile only the types a stream declares in full.
+    pub(super) fn declares_names(self, node: &RawNode) -> bool {
+        matches!(self, Self::Named) || node.definition.source == SchemaSource::EmbeddedFull
     }
 
     fn has_common_geometry(self, node: &RawNode) -> bool {
@@ -387,6 +403,20 @@ fn intersection_data_field<'a>(node: &'a RawNode, role: &str) -> Option<&'a RawF
         "values" => Some(values),
         _ => None,
     }
+}
+
+/// A facet surface whose complete declaration the stream carries.
+///
+/// `MESH` is absent from the 13006 base (see `SCH13006_FACET_TYPES`), so the
+/// stream declares it in full, field names included; only that declaration,
+/// with the owner of a surface (class 1007), acquires the surface role.
+fn is_embedded_mesh(node: &RawNode) -> bool {
+    node.definition.source == SchemaSource::EmbeddedFull
+        && node.definition.name == "MESH"
+        && node
+            .fields
+            .iter()
+            .any(|f| f.definition.name == "owner" && f.definition.pointer_class == 1007)
 }
 
 /// The reviewed base definitions behind one exact embedded 13006 key.

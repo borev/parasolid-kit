@@ -10,17 +10,20 @@ from itertools import pairwise
 from math import isfinite
 
 from ... import __version__
+from ...brep._errors import _with_operation_cause
 from ...brep.geometry import (
     BlendBoundarySurface,
     BlendedEdgeSurface,
     CircleCurve,
     ConeSurface,
+    CurveGeometry,
     CurveKind,
     CylinderSurface,
     EllipseCurve,
     HyperbolaCurve,
     IntersectionCurve,
     LineCurve,
+    MeshSurface,
     NurbsCurve,
     NurbsSurface,
     OffsetSurface,
@@ -36,6 +39,7 @@ from ...brep.geometry import (
     XtConeSurface,
 )
 from ...brep.model import BrepModel
+from ...brep.placement import _AssemblyExpansionLimitError
 from ...brep.topology import BodyKind, Sense, SourceNodeRef
 from ...diagnostics import (
     Diagnostic,
@@ -46,7 +50,7 @@ from ...diagnostics import (
 from ..dependency import installed_interop_distributions, require_occt
 from ..errors import OcctConversionError
 from ..limits import DEFAULT_INTEROP_LIMITS, InteropLimits
-from .geometry import GeometryFactory
+from .geometry import GeometryFactory, _is_closed_curve
 from .model import (
     ConversionReport,
     DroppedFace,
@@ -60,7 +64,7 @@ from .model import (
     SourceShapeMap,
 )
 from .options import LengthUnit, OcctConversionOptions, ValidationTolerances
-from .placement import Placement
+from .placement import Placement, prepare_instances
 from .placement import place_instances as _place_instances
 from .topology import PendingRelation, TopologyBuilder, is_isolated_fin
 from .validation import (
@@ -122,6 +126,43 @@ def to_occt(
     if preflight:
         _raise_conversion(context, preflight[0], diagnostics=preflight)
 
+    occurrences = ()
+    if options.place_instances:
+        try:
+            occurrences = prepare_instances(brep, limits.max_instances)
+        except _AssemblyExpansionLimitError as error:
+            _raise_conversion(
+                context,
+                _with_operation_cause(
+                    _diagnostic(
+                        context,
+                        code="occt.limit_exceeded",
+                        kind=DiagnosticKind.LIMIT,
+                        message=str(error),
+                        details={
+                            "resource": "max_instances",
+                            "observed": limits.max_instances + 1,
+                            "limit": limits.max_instances,
+                        },
+                    ),
+                    error,
+                ),
+            )
+        except ValueError as error:
+            _raise_conversion(
+                context,
+                _with_operation_cause(
+                    _diagnostic(
+                        context,
+                        code="occt.invalid_topology",
+                        kind=DiagnosticKind.INVALID,
+                        message=f"assembly placement failed: {error}",
+                        details={"exception_type": type(error).__name__},
+                    ),
+                    error,
+                ),
+            )
+
     runtime = require_occt()
     context.ocp_version = _optional_text(getattr(runtime, "__version__", None))
     context.ocp_distribution = _ocp_distribution()
@@ -152,9 +193,9 @@ def to_occt(
             )
         root, relations = built.shape, built.relations
         placement = None
-        if options.place_instances and brep.instances:
+        if options.place_instances and (brep.assemblies or brep.instances):
             placement = _place_instances(
-                brep, dict(built.body_shapes), built.relations, options.applied_scale
+                brep, dict(built.body_shapes), built.relations, options.applied_scale, occurrences
             )
             root, relations = placement.shape, placement.relations
             context.placement = placement
@@ -248,7 +289,7 @@ def to_occt(
             message=f"OCCT topology construction failed: {error}",
             details={"exception_type": type(error).__name__},
         )
-        conversion_error = _conversion_error(context, diagnostic)
+        conversion_error = _conversion_error(context, _with_operation_cause(diagnostic, error))
         raise conversion_error from error
 
     context.conversion_complete = not partial_result
@@ -301,6 +342,8 @@ class _ConversionContext:
                 self.brep.points,
                 self.brep.curves,
                 self.brep.surfaces,
+                self.brep.assemblies,
+                self.brep.instances,
             )
         )
 
@@ -515,7 +558,8 @@ def _uses_parametric_topology(model: BrepModel) -> bool:
     """Whether the model needs the general parametric topology builder.
 
     Surface-parametric and intersection curves require it. So do arcs bounded
-    by vertices on circles and ellipses, trimmed sphere and torus faces, and
+    by vertices on circles, ellipses and periodic B-curves, ring edges on the
+    whole of a trimmed basis, pointed cones, trimmed sphere and torus faces, and
     NURBS or offset faces with several loops: the analytic builder constructs
     none of these, while the parametric builder derives their edge ranges and
     face parameters from the source geometry.
@@ -530,6 +574,11 @@ def _uses_parametric_topology(model: BrepModel) -> bool:
     half_edges = {item.id: item for item in model.half_edges}
     for edge in model.edges:
         if edge.start_vertex is None and edge.end_vertex is None:
+            # A ring edge on a whole trimmed basis takes its range from the trim.
+            if edge.curve is not None and isinstance(
+                getattr(curves.get(edge.curve), "definition", None), TrimmedCurve
+            ):
+                return True
             continue
         curve_ids = {edge.curve} if edge.curve is not None else set()
         curve_ids.update(
@@ -539,15 +588,30 @@ def _uses_parametric_topology(model: BrepModel) -> bool:
         )
         if any(
             curves[cid].kind in {CurveKind.CIRCLE, CurveKind.ELLIPSE}
+            or (isinstance(curves[cid].definition, NurbsCurve) and curves[cid].definition.periodic)
             for cid in curve_ids
             if cid in curves
         ):
             return True
     surfaces = {item.id: item for item in model.surfaces}
+    loops = {item.id: item for item in model.loops}
     for face in model.faces:
         surface = surfaces.get(face.surface) if face.surface is not None else None
         if surface is None:
             continue
+        if surface.kind is SurfaceKind.CONE:
+            # A pointed cone: one ring and the apex, an isolated vertex loop.
+            trims = [
+                loop_id
+                for loop_id in face.loops
+                if loop_id in loops
+                and not all(
+                    hid in half_edges and is_isolated_fin(half_edges[hid])
+                    for hid in loops[loop_id].half_edges
+                )
+            ]
+            if len(trims) == 1:
+                return True
         if surface.kind in {
             SurfaceKind.SPHERE,
             SurfaceKind.TORUS,
@@ -668,12 +732,18 @@ def _unsupported_diagnostics(context: _ConversionContext) -> list[Diagnostic]:
                         details={"entity_kind": "edge", "entity_id": edge.id},
                     )
                 )
-            if curve.kind in {
-                CurveKind.LINE,
-                CurveKind.PARABOLA,
-                CurveKind.HYPERBOLA,
-                CurveKind.TRIMMED,
-            } and not (has_start and has_end):
+            ring_trim = not (has_start or has_end) and _whole_closed_trim(context, curve, curves)
+            if (
+                curve.kind
+                in {
+                    CurveKind.LINE,
+                    CurveKind.PARABOLA,
+                    CurveKind.HYPERBOLA,
+                    CurveKind.TRIMMED,
+                }
+                and not (has_start and has_end)
+                and not ring_trim
+            ):
                 result.append(
                     _diagnostic(
                         context,
@@ -693,7 +763,9 @@ def _unsupported_diagnostics(context: _ConversionContext) -> list[Diagnostic]:
             if curve.kind is CurveKind.NURBS and isinstance(curve.definition, NurbsCurve):
                 definition = curve.definition
                 closed = definition.closed or definition.periodic
-                if closed == (has_start and has_end):
+                bounded = has_start and has_end
+                # Two vertices bound an arc of a periodic curve, as of a circle.
+                if (closed and bounded and not definition.periodic) or (not closed and not bounded):
                     result.append(
                         _diagnostic(
                             context,
@@ -734,6 +806,38 @@ def _unsupported_diagnostics(context: _ConversionContext) -> list[Diagnostic]:
     return result
 
 
+def _whole_closed_trim(
+    context: _ConversionContext, curve: CurveGeometry, curves: dict[int, CurveGeometry]
+) -> bool:
+    """Whether a trimmed curve is the whole of a closed basis curve.
+
+    The XT reference (printed pp. 48-49) trims the whole of a periodic or
+    closed basis with coincident points, its parameters a period apart, and
+    forbids coincident points on an open basis; such a curve is closed and can
+    carry a ring edge without vertices. A surface-parametric basis closes in
+    space where its trim points coincide.
+    """
+
+    definition = curve.definition
+    if not isinstance(definition, TrimmedCurve):
+        return False
+    basis = curves.get(definition.basis_curve)
+    if basis is None or not (
+        _is_closed_curve(basis.definition) or isinstance(basis.definition, SurfaceParametricCurve)
+    ):
+        return False
+    scale = context.options.applied_scale
+    start = definition.start_point.to_tuple()
+    end = definition.end_point.to_tuple()
+    distance = sum((b - a) ** 2 for a, b in zip(start, end, strict=True)) ** 0.5 * scale
+    magnitude = sum(value * value for value in start) ** 0.5 * scale
+    return (
+        isfinite(distance)
+        and distance <= context.options.validation.linear_threshold(magnitude)
+        and definition.start_parameter != definition.end_parameter
+    )
+
+
 def _supported_curve_definition(kind: CurveKind, definition: object) -> bool:
     return any(
         (
@@ -767,6 +871,7 @@ def _supported_surface_definition(kind: SurfaceKind, definition: object) -> bool
                 (SurfaceKind.SPUN, SpunSurface),
                 (SurfaceKind.SWEPT, SweptSurface),
                 (SurfaceKind.NURBS, NurbsSurface),
+                (SurfaceKind.MESH, MeshSurface),
                 (SurfaceKind.OFFSET, OffsetSurface),
                 (SurfaceKind.BLENDED_EDGE, BlendedEdgeSurface),
                 (SurfaceKind.BLEND_BOUNDARY, BlendBoundarySurface),

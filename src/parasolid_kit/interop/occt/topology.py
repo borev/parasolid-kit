@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from math import pi, sqrt
@@ -13,6 +14,7 @@ from ...brep.geometry import (
     CylinderSurface,
     EllipseCurve,
     LineCurve,
+    MeshSurface,
     NurbsSurface,
     OffsetSurface,
     PlaneSurface,
@@ -93,6 +95,7 @@ class TopologyBuilder:
         self.failed_bodies: dict[int, str] = {}
         self.partial_bodies: list[int] = []
         self._stage_faces: tuple[Face, ...] | None = None
+        self._surface_uses: Counter[int | None] | None = None
         self.bodies = {item.id: item for item in model.bodies}
         self.regions = {item.id: item for item in model.regions}
         self.shells = {item.id: item for item in model.shells}
@@ -127,6 +130,8 @@ class TopologyBuilder:
         self.vertex_shapes: dict[int, object] = {}
         self.edge_shapes: dict[int, object] = {}
         self.face_shapes: dict[int, object] = {}
+        # Facet faces built from their stored triangles, without a surface.
+        self.mesh_faces: set[int] = set()
         self.loop_shapes: dict[int, object] = {}
         self.half_edge_shapes: dict[int, object] = {}
         self.relations: list[PendingRelation] = []
@@ -142,6 +147,7 @@ class TopologyBuilder:
         self._build_vertices()
         self._build_initial_edges()
         for stage in (
+            self._build_mesh_faces,
             self._build_cylinder_faces,
             self._build_cone_faces,
             self._build_plane_faces,
@@ -574,6 +580,42 @@ class TopologyBuilder:
                 )
             self.operations.append("bounded_periodic_cone_face")
 
+    def _shell_closed(self, shell: object, face_ids: list[int]) -> bool:
+        """Whether a shell closes; facets have no edges to show it, so a shell of
+        facet faces only is taken as the source body states it."""
+        from OCP.BRep import BRep_Tool
+
+        if face_ids and all(face_id in self.mesh_faces for face_id in face_ids):
+            return True
+        return bool(BRep_Tool.IsClosed_s(shell))
+
+    def _build_mesh_faces(self) -> None:
+        """Facet faces: the stored triangles on a face that has no surface.
+
+        OCCT meshes, bounds, measures and writes such a face from its
+        triangulation; :func:`.validation.shape_is_valid` leaves it out of the
+        kernel checks, which require a surface.
+        """
+        from OCP.BRep import BRep_Builder
+        from OCP.TopoDS import TopoDS, TopoDS_Face
+
+        for face in self._faces():
+            if face.surface is None or face.id in self.face_shapes:
+                continue
+            surface = self._surface_for_face(face)
+            if not isinstance(surface.definition, MeshSurface):
+                continue
+            if self._trim_loops(face):
+                raise ValueError(f"mesh face {face.id} has boundary loops")
+            shape = TopoDS_Face()
+            BRep_Builder().MakeFace(shape, self.geometry.triangulation(surface.definition))
+            result = TopoDS.Face_s(self._orient_shape(shape, face.sense, surface.sense))
+            self.face_shapes[face.id] = result
+            self.mesh_faces.add(face.id)
+            self._record(SourceEntityKind.FACE, face.id, face.source, result)
+            self._record_surface(surface, result)
+            self.operations.append("mesh_triangulation_face")
+
     def _build_plane_faces(self) -> None:
         from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeFace
         from OCP.TopoDS import TopoDS
@@ -822,7 +864,11 @@ class TopologyBuilder:
             # A wire body without a shell lists its edges on the body itself.
             edge_ids = list(dict.fromkeys(body.edges))
         if not edge_ids:
-            raise ValueError(f"wire body {body.id} has no edges")
+            # A wire body of isolated vertices alone has nothing to draw.
+            if not self.partial:
+                raise ValueError(f"wire body {body.id} has no edges")
+            self.failed_bodies[body.id] = "wire body has no edges"
+            return None
         available = [i for i in edge_ids if i in self.edge_shapes]
         if not available:
             self.failed_bodies[body.id] = "every edge was dropped"
@@ -873,7 +919,7 @@ class TopologyBuilder:
         return body_shape
 
     def _build_bodies(self) -> list[tuple[int, object]]:
-        from OCP.BRep import BRep_Builder, BRep_Tool
+        from OCP.BRep import BRep_Builder
         from OCP.BRepBuilderAPI import BRepBuilderAPI_MakeSolid
         from OCP.TopoDS import TopoDS_Shell
 
@@ -922,7 +968,7 @@ class TopologyBuilder:
                 )
 
             if body.kind is BodyKind.SOLID and (
-                len(available) < len(face_ids) or not BRep_Tool.IsClosed_s(shell_shape)
+                len(available) < len(face_ids) or not self._shell_closed(shell_shape, available)
             ):
                 if not self.partial:
                     raise ValueError(f"body {body.id} boundary shell is not closed")
@@ -1238,8 +1284,13 @@ class TopologyBuilder:
         return shape.Reversed()
 
     def _record_surface(self, surface: SurfaceGeometry, shape: object) -> None:
-        uses = sum(face.surface == surface.id for face in self.model.faces)
-        relation = ShapeRelationKind.SPLIT if uses > 1 else ShapeRelationKind.DIRECT
+        if self._surface_uses is None:
+            self._surface_uses = Counter(face.surface for face in self.model.faces)
+        relation = (
+            ShapeRelationKind.SPLIT
+            if self._surface_uses[surface.id] > 1
+            else ShapeRelationKind.DIRECT
+        )
         self._record(
             SourceEntityKind.SURFACE,
             surface.id,

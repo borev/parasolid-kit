@@ -19,6 +19,106 @@
   data and selected operations; this is not a claim of complete Parasolid
   geometry coverage or CAD-kernel compatibility.
 - Expose intersection chart parameters, limit metadata, and UV data as immutable Python values while retaining unknown UV modes and raw values.
+- Read facet ("mesh") faces. The facet node types (`PSM_MESH` 189, the integer
+  and vector teeth and combs 190-193, `MESH` 201, `OFFSET_VALUES` 205,
+  `MESH_OFFSET_DATA` 206 and the schema data records 207, 208, 210 and 211)
+  lie above the 13006 base's type table, so a stream declares them in full; an
+  NX 36 transmit file with a facet body does. Every family of provider schema
+  13006 now confirms their absence from the base, and exact profiles reach it
+  through their family; before, such files failed with
+  `schema.unknown_base_type`. Other types above the base table keep unknown
+  membership.
+- The B-Rep mapper decodes a `MESH` surface stored in the stream (`PSM_MESH`
+  -> a vector comb of positions and an integer comb of triangle corners, each
+  a list of fixed-size teeth; the tooth list may run past the capacity with
+  null entries, and corners may be one- or zero-based) as `SurfaceKind.MESH`
+  with a `MeshSurface`: packed little-endian positions and zero-based triangle
+  corners, unpacked by `position_array()` and `triangle_array()`. Facets
+  stored outside the stream, in single precision, or placed by a transform are
+  retained as unsupported surfaces with `geometry.unsupported_surface`.
+- OCCT conversion builds a facet face as an OCCT face that carries only its
+  triangulation (`mesh_triangulation_face`): OCCT meshes, bounds, measures and
+  writes it from the triangles. A shell of facet faces only is closed as the
+  source body states (its faces have no edges to show it), and the validity
+  check leaves facet faces, with the shells and solids around them, out of the
+  kernel check, which needs a surface. Bounds use the triangulation of facet
+  faces.
+- OCCT validity of a face with more than 256 wires is checked in groups: the
+  inner wires whose parameter boxes overlap go into one group, and each group
+  is checked with the outer wire as a temporary face of the same surface. Two
+  wires with disjoint boxes can neither cross nor nest, so the verdict is the
+  kernel's whole-face check, which classifies every wire against every other
+  one: a plate with thousands of holes took minutes per check, and the
+  conversion checks each face and then the whole shape. A shape with such a
+  face is checked as its other faces, free edges and vertices, the grouped
+  faces, and the closure and orientation of its shells and solids. Faces on
+  periodic surfaces, or whose inner wires the outer wire does not box, are
+  checked whole.
+
+- Fix the helical forms of issue #13: node type 163 is the analytic form of a
+  B-surface (`SURFACE_DATA` with analytic form type `'H'`), declared with the
+  public reference's `HELIX_SU_FORM` fields (axis, hand, turns, pitch, gap,
+  tolerance; `vvcifff`), and node type 184 the analytic form of a B-curve
+  (`CURVE_DATA`), declared with the `HELIX_CU_FORM` fields (axis, point, hand,
+  turns, pitch, tolerance; `vvvciff`). The reference's node-type table gives
+  the two numbers the other way round; the previous declaration followed it
+  and read SolidWorks streams out of step after their first descriptor
+  (`text.invalid_token`). `FIELD_NAMES` (99), the names of an attribute
+  definition's fields, is declared from the reference (printed pp. 102-103).
+  The SolidWorks partition and transmit-file profiles move to revision 3
+  (`solidworks-sch37102-13006-r4` for the 2026 key) with new digests, and every
+  family over base 13006 changes its digest.
+- Add the exact standard keys `SCH_800000_8008` (`solidworks-800000-8008-r1`,
+  SolidWorks transmit files saved as Parasolid 8, written with the record
+  layouts of schema 9003) and `SCH_2600169_25001` (`inventor-2600169-25001-r1`,
+  Autodesk Inventor transmit files, with the edits embedded 25001 streams carry
+  against base 13006). Their families read other builds of the two schemas,
+  such as the iCAD SX keys `SCH_800194_8008` and `SCH_2600000_25001`; before,
+  these keys failed with `schema.missing_base_schema`.
+- Revise five standard profiles with the node types transmit files of further
+  writers carry under their keys, each with its reviewed 13006 layout:
+  `nx-1000252-10004-r2` (CONE, SWEPT_SURF, SPUN_SURF), `icad-1500000-15003-r2`
+  (B-spline surfaces, blends, CHAR_VALUES), `icad-1901000-19008-r2` (assembly
+  structure, intersections, cones, spheres, blends, swept surfaces, value
+  nodes, B-spline and SP_CURVE dependencies), `icad-2401000-20000-r4` (CONE,
+  VECTOR_VALUES, UNICODE_VALUES) and `solidworks-1200000-12006-r2` (27 types,
+  the helical surface form among them). Schema 12006 as SolidWorks and CAD
+  Exchanger write it lists fourteen legal owners in `ATTRIB_DEF` (the
+  reference's declaration) without field names, and keeps the analytic-form
+  pointer of `CURVE_DATA`; the reference's own transmit example, with thirteen
+  owners, now fails closed under the key. Before, these files stopped with
+  `schema.builtin_profile_uncovered_type` or `text.invalid_token`.
+- An attribute field index that names no node of the file maps as an empty
+  field of the declared kind, as the XT reference reads unresolved indices as
+  zero (printed p. 11); before, the mapping failed with `brep.invalid_reference`.
+- OCCT conversion: a ring edge on a trimmed curve that spans its whole closed
+  basis (XT reference, printed pp. 48-49: coincident trim points on a circle,
+  an ellipse, a closed or periodic B-curve or a surface-parametric curve) and
+  an edge bounded by two vertices
+  on a periodic B-curve take the parametric path instead of failing the whole
+  conversion with `occt.unsupported_curve`; a trim that runs down a basis of
+  negative sense is built up its parameter and reversed. A pointed cone (one
+  ring and the apex as an isolated vertex loop) is closed with the degenerated
+  edge of its apex (`insert_degenerated_cone_apex_edge`); before, the face was
+  invalid and a partial conversion dropped it. A partial conversion skips a
+  wire body without edges (`bodies_failed`, "wire body has no edges") instead
+  of failing outright.
+- OCCT conversion no longer spends quadratic time checking the result's
+  subshape keys and counting the faces of each surface.
+
+- Add structured `Diagnostic` values to geometry evaluation, assembly placement,
+  and stored-geometry errors while retaining their `ValueError` inheritance and
+  text messages. Codes, available source locations, fields, parameters and
+  failing batch indices are preserved through OCCT/preview wrappers and CLI JSON.
+- Share assembly graph validation, expansion, and composed placements between
+  the dependency-free API and OCCT conversion. Reject cycles, nonreciprocal
+  links, invalid transforms, and expansion overflow before loading OCCT;
+  inherit negative flags along the entire instance path. OCCT and assembly
+  previews use `InteropLimits.max_instances` (default 100,000).
+- Add dependency-free 2D NURBS evaluation and SP_CURVE lifting from UV to 3D
+  points and exact parameter derivatives. Bounded batch APIs reuse reference,
+  knot, and derivative preparation and evaluate local tensor-product spans.
+  Existing curve evaluation and sampling also accept supported SP_CURVEs.
 - Add dependency-free Python curve evaluation and parameter sampling, analytic
   surface evaluation, and exact nonperiodic rational/nonrational NURBS derivatives.
 - Add bounded assembly occurrence traversal and affine placement APIs. The

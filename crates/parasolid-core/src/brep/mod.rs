@@ -81,8 +81,9 @@ pub use model::{
     BoundingBox, BrepDiagnostic, BrepId, BrepMetrics, BrepModel, BrepSourceFormat, CurveGeometry,
     CurveKind, Edge, Face, HalfEdge, Instance, InstancePart, IntersectionChartParameters,
     IntersectionData, IntersectionLimitKind, IntersectionUvCoordinates, IntersectionUvType, Loop,
-    NurbsCurve, NurbsSurface, PointGeometry, Region, RegionKind, Sense, Shell, SourceNodeRef,
-    SurfaceGeometry, SurfaceKind, SweptSurfaceData, TopologyValidation, Transform, Vector3, Vertex,
+    MeshSurface, NurbsCurve, NurbsSurface, PointGeometry, Region, RegionKind, Sense, Shell,
+    SourceNodeRef, StoredMeshSurface, SurfaceGeometry, SurfaceKind, SweptSurfaceData,
+    TopologyValidation, Transform, Vector3, Vertex,
 };
 pub use nurbs_curve::{
     evaluate_mapped_nurbs_curve_candidate, evaluate_mapped_nurbs_curve_candidate_2d,

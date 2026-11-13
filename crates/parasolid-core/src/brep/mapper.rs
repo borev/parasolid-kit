@@ -15,8 +15,9 @@ use super::model::{
     BrepDiagnostic, BrepId, BrepMetrics, BrepModel, BrepSourceFormat, CurveGeometry, CurveKind,
     Edge, Face, HalfEdge, Instance, InstancePart, IntersectionChartParameters, IntersectionData,
     IntersectionLimitKind, IntersectionUvCoordinates, IntersectionUvType, Loop, NurbsCurve,
-    NurbsSurface, PointGeometry, Region, RegionKind, Sense, Shell, SourceNodeRef, SurfaceGeometry,
-    SurfaceKind, SweptSurfaceData, TopologyValidation, Transform, Vector3, Vertex,
+    MeshSurface, NurbsSurface, PointGeometry, Region, RegionKind, Sense, Shell, SourceNodeRef,
+    StoredMeshSurface, SurfaceGeometry, SurfaceKind, SweptSurfaceData, TopologyValidation,
+    Transform, Vector3, Vertex,
 };
 use super::profile_roles::RoleAccess;
 
@@ -1307,7 +1308,34 @@ impl<'a> Mapper<'a> {
                 )?,
                 offset: self.double(node, "offset")?,
             },
-            "MESH" => self.mesh_surface(node)?,
+            "MESH" => {
+                if matches!(self.roles, RoleAccess::TopsolidCatalog | RoleAccess::Sch3600188) {
+                    self.stored_mesh_surface(node)?
+                } else {
+                    match self.decoded_mesh_surface(node)? {
+                        Ok(mesh) => SurfaceKind::Mesh(mesh),
+                        Err(reason) => {
+                            let source = self.source(node);
+                            push_diagnostic(
+                                &mut self.diagnostics.borrow_mut(),
+                                self.max_diagnostics,
+                                node.byte_range.start,
+                                BrepDiagnostic {
+                                    code: "geometry.unsupported_surface",
+                                    message: format!(
+                                        "MESH facets are retained undecoded: {reason}"
+                                    ),
+                                    role: "surface",
+                                    source,
+                                },
+                            )?;
+                            SurfaceKind::Unsupported {
+                                type_name: "MESH".to_owned(),
+                            }
+                        }
+                    }
+                }
+            }
             "B_SURFACE" => SurfaceKind::Nurbs(self.nurbs_surface(node)?),
             type_name => {
                 let source = self.source(node);
@@ -1338,7 +1366,7 @@ impl<'a> Mapper<'a> {
         })
     }
 
-    fn mesh_surface(&mut self, node: &RawNode) -> Result<SurfaceKind, ParseError> {
+    fn stored_mesh_surface(&mut self, node: &RawNode) -> Result<SurfaceKind, ParseError> {
         if self.mesh_context.is_none() {
             let context = super::mesh_data::MeshDecodeContext::new(
                 self.schema_key,
@@ -1393,16 +1421,207 @@ impl<'a> Mapper<'a> {
             )?;
         }
         let unembedded_source_fields = embedded.is_none().then(|| node.fields.clone());
-        Ok(SurfaceKind::Mesh {
+        Ok(SurfaceKind::StoredMesh(StoredMeshSurface {
             source_mesh_index: node.index,
             embedded,
             transform_index,
             transform,
             unembedded_source_fields,
-        })
+        }))
     }
 
     #[allow(clippy::float_cmp)] // A zero range is stored as exact zeros.
+    /// Facets stored in the stream: `MESH` -> `PSM_MESH` -> a vector comb of
+    /// positions and an integer comb of triangle corners, each comb a list of
+    /// fixed-size teeth. The types are declared in full by the stream, so
+    /// their fields are found by the declared names. `Ok(Err(reason))` keeps
+    /// valid facets that this reader does not decode (stored outside the
+    /// stream, single precision, or placed by a transform).
+    fn decoded_mesh_surface(&self, node: &RawNode) -> Result<Result<MeshSurface, String>, ParseError> {
+        if self.pointer(node, "transform")? != 0 {
+            return Ok(Err("the facets are placed by a transform".to_owned()));
+        }
+        let psm_index = self.pointer(node, "psm_imesh")?;
+        if psm_index == 0 {
+            return Ok(Err("the facets are not stored in the stream".to_owned()));
+        }
+        let psm = self.embedded_node(node, "psm_imesh", psm_index, "PSM_MESH")?;
+        if self.pointer(psm, "owner")? != 0 {
+            return Err(self.invalid_reference(
+                psm,
+                "owner",
+                self.pointer(psm, "owner")?,
+                "null",
+                "PSM_MESH owner is reserved and must be null",
+            ));
+        }
+        if self.byte(psm, "precision")? != 1 {
+            return Ok(Err(
+                "the facets are not stored in double precision".to_owned()
+            ));
+        }
+        let (positions_comb, positions) = self.mesh_pool(psm, "position_pool", true)?;
+        let (corners_comb, corners) = self.mesh_pool(psm, "position_indices", false)?;
+        let vertex_count = positions.len() / 3;
+        if vertex_count == 0 || corners.is_empty() || corners.len() % 3 != 0 {
+            return Err(self.invalid_geometry(
+                psm,
+                "position_indices",
+                "a mesh needs positions and complete triangles",
+            ));
+        }
+        // Triangle corners are one-based in the observed NX streams (their
+        // largest index equals the vertex count); a zero index means zero-based.
+        let (low, high) = corners
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), &value| {
+                (low.min(value), high.max(value))
+            });
+        let count = f64::from(u32::try_from(vertex_count).unwrap_or(u32::MAX));
+        let origin = if low >= 1.0 && high <= count && (high - count).abs() < 0.5 {
+            1.0
+        } else if low >= 0.0 && high < count && low.abs() < 0.5 {
+            0.0
+        } else {
+            return Err(self.invalid_geometry(
+                psm,
+                "position_indices",
+                "mesh corner indices do not address the position pool from zero or one",
+            ));
+        };
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+        let triangles = corners
+            .iter()
+            .map(|&value| (value - origin) as u32)
+            .collect();
+        Ok(Ok(MeshSurface {
+            positions,
+            triangles,
+            sources: vec![
+                self.source(psm),
+                self.source(positions_comb),
+                self.source(corners_comb),
+            ],
+        }))
+    }
+
+    /// One comb of a `PSM_MESH`: its teeth hold `1 << shift` values each, and
+    /// the teeth past the stored count may be null (the NX stream leaves half
+    /// of its tooth list unused). Positions are vectors of
+    /// three doubles (encoding 1); corner indices are 32-bit integers.
+    fn mesh_pool(
+        &self,
+        psm: &'a RawNode,
+        field: &'static str,
+        vectors: bool,
+    ) -> Result<(&'a RawNode, Vec<f64>), ParseError> {
+        let index = self.required_pointer(psm, field)?;
+        let (comb_name, tooth_name, count_name, capacity_name) = if vectors {
+            ("VECTOR_COMB", "VECTOR_TOOTH", "n_vectors", "n_max_vectors")
+        } else {
+            (
+                "INTEGER_COMB",
+                "INTEGER_TOOTH",
+                "n_integers",
+                "n_max_integers",
+            )
+        };
+        let comb = self.embedded_node(psm, field, index, comb_name)?;
+        if self.byte(comb, "encoding")? != 1 {
+            return Err(self.invalid_geometry(comb, "encoding", "unsupported mesh pool encoding"));
+        }
+        if !vectors && self.nonnegative_integer(comb, "n_bits_per_integer")? != 32 {
+            return Err(self.invalid_geometry(
+                comb,
+                "n_bits_per_integer",
+                "only 32-bit mesh integer pools are supported",
+            ));
+        }
+        let count =
+            usize::try_from(self.nonnegative_integer(comb, count_name)?).unwrap_or(usize::MAX);
+        let capacity =
+            usize::try_from(self.nonnegative_integer(comb, capacity_name)?).unwrap_or(usize::MAX);
+        let shift = self.nonnegative_integer(comb, "shift")?;
+        if shift > 24 || count > capacity {
+            return Err(self.invalid_geometry(
+                comb,
+                if shift > 24 { "shift" } else { count_name },
+                "mesh pool count or tooth size is invalid",
+            ));
+        }
+        let tooth_size = 1_usize << shift;
+        // The tooth list grows ahead of the capacity; its extra entries are null.
+        let teeth = self.pointer_array(comb, "teeth")?;
+        if capacity % tooth_size != 0 || teeth.len() < capacity / tooth_size {
+            return Err(self.invalid_geometry(
+                comb,
+                "teeth",
+                "mesh pool capacity does not match its teeth",
+            ));
+        }
+        let components = if vectors { 3 } else { 1 };
+        let mut values = Vec::with_capacity(count.saturating_mul(components));
+        for &tooth_index in &teeth[..count.div_ceil(tooth_size)] {
+            if tooth_index == 0 {
+                return Err(self.invalid_reference(
+                    comb,
+                    "teeth",
+                    0,
+                    tooth_name,
+                    "a tooth holding stored values is null",
+                ));
+            }
+            let tooth = self.embedded_node(comb, "teeth", tooth_index, tooth_name)?;
+            let stored = &self.field(tooth, "values")?.values;
+            if stored.len() != tooth_size * components {
+                return Err(self.invalid_geometry(tooth, "values", "mesh tooth length is invalid"));
+            }
+            // Capacity past the stored count is not interpreted.
+            let wanted = (count * components - values.len()).min(stored.len());
+            for value in &stored[..wanted] {
+                values.push(match value {
+                    FieldValue::Double(Some(number)) if vectors && number.is_finite() => *number,
+                    FieldValue::Integer(Some(number)) if !vectors => f64::from(*number),
+                    _ => {
+                        return Err(self.invalid_geometry(
+                            tooth,
+                            "values",
+                            "mesh tooth holds a null, non-finite or mistyped value",
+                        ));
+                    }
+                });
+            }
+        }
+        Ok((comb, values))
+    }
+
+    /// A raw node reached by a pointer, of a type whose field names are known:
+    /// declared in full by the stream under a built-in profile.
+    fn embedded_node(
+        &self,
+        owner: &RawNode,
+        field: &'static str,
+        target: u32,
+        expected: &'static str,
+    ) -> Result<&'a RawNode, ParseError> {
+        let node = self.nodes.get(&target).copied().ok_or_else(|| {
+            self.invalid_reference(owner, field, target, expected, "pointer is unresolved")
+        })?;
+        if !self.roles.declares_names(node) || node.definition.name != expected {
+            return Err(self.invalid_reference(
+                owner,
+                field,
+                target,
+                expected,
+                format!(
+                    "pointer targets {} rather than {expected}",
+                    node.definition.name
+                ),
+            ));
+        }
+        Ok(node)
+    }
+
     fn blended_edge_surface(&self, node: &RawNode) -> Result<SurfaceKind, ParseError> {
         let blend_type = match self.character(node, "blend_type")? {
             b'R' => BlendType::RollingBall,
@@ -3965,12 +4184,12 @@ mod tests {
             let root = &model.assemblies[0];
             assert_eq!(root.kind, AssemblyKind::Collective);
             assert_eq!(root.instances, [0, 1]);
-            assert!(root.referencing_instances.is_empty());
+            assert_eq!(root.referencing_instances, [] as [u32; 0]);
             assert_eq!(root.source.node_id, None);
             let sub = &model.assemblies[1];
             assert_eq!(sub.kind, AssemblyKind::Disjunctive);
             assert_eq!(sub.referencing_instances, [1]);
-            assert!(sub.instances.is_empty());
+            assert_eq!(sub.instances, [] as [u32; 0]);
             let placed = &model.instances[0];
             assert!(!placed.negative);
             assert_eq!(placed.part, InstancePart::Body(0));
@@ -4592,10 +4811,7 @@ mod tests {
         if let Ok(SurfaceKind::Spun { profile, .. }) = spun {
             assert_eq!(
                 profile,
-                mapper
-                    .map_curve(2)
-                    .map(|curve| curve.id)
-                    .unwrap_or(u32::MAX)
+                mapper.map_curve(2).map_or(u32::MAX, |curve| curve.id)
             );
         }
         let swept = mapper.map_surface(swept_index).map(|surface| surface.kind);
@@ -4613,10 +4829,7 @@ mod tests {
         if let Ok(SurfaceKind::Swept { section, .. }) = swept {
             assert_eq!(
                 section,
-                mapper
-                    .map_curve(2)
-                    .map(|curve| curve.id)
-                    .unwrap_or(u32::MAX)
+                mapper.map_curve(2).map_or(u32::MAX, |curve| curve.id)
             );
         }
         let nurbs = mapper.map_surface(13);
@@ -5783,11 +5996,11 @@ mod tests {
             assert_eq!(surface.sense, Sense::Positive);
             assert!(matches!(
                 &surface.kind,
-                SurfaceKind::Mesh {
+                SurfaceKind::StoredMesh(StoredMeshSurface {
                     transform_index: Some(7),
                     transform: Some(transform),
                     ..
-                } if transform.index == 7 && transform.translation == [10.0, 0.0, 0.0]
+                }) if transform.index == 7 && transform.translation == [10.0, 0.0, 0.0]
             ));
             let triangles = surface
                 .kind
@@ -5813,10 +6026,10 @@ mod tests {
             );
 
             let mut ambiguous_brep = brep.clone();
-            let SurfaceKind::Mesh {
+            let SurfaceKind::StoredMesh(StoredMeshSurface {
                 embedded: Some(mesh),
                 ..
-            } = &mut ambiguous_brep.surfaces[0].kind
+            }) = &mut ambiguous_brep.surfaces[0].kind
             else {
                 panic!("expected embedded mesh surface");
             };
@@ -5877,5 +6090,141 @@ mod tests {
                 })
             ));
         }
+    }
+    fn mesh_nodes(corners: [i32; 12], transform: u32, teeth: [u32; 4]) -> Vec<RawNode> {
+        let pointer = FieldValue::PointerIndex;
+        let integer = |value| FieldValue::Integer(Some(value));
+        let byte = FieldValue::UnsignedByte;
+        let positions = [0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0];
+        let mut mesh = common_surface_fields(0);
+        mesh.push(field("transform", 100, vec![pointer(transform)]));
+        mesh.push(field("psm_imesh", 189, vec![pointer(21)]));
+        let tooth = |index: u32, values: &[i32]| {
+            node(
+                index,
+                190,
+                "INTEGER_TOOTH",
+                vec![field(
+                    "values",
+                    0,
+                    values.iter().map(|v| integer(*v)).collect(),
+                )],
+            )
+        };
+        let mut nodes = wire_acorn_nodes();
+        nodes.extend([
+            node(20, 201, "MESH", mesh),
+            node(
+                21,
+                189,
+                "PSM_MESH",
+                vec![
+                    field("precision", 0, vec![byte(1)]),
+                    field("owner", 201, vec![pointer(0)]),
+                    field("position_pool", 193, vec![pointer(22)]),
+                    field("position_indices", 191, vec![pointer(24)]),
+                    field("normal_type", 0, vec![byte(1)]),
+                ],
+            ),
+            node(
+                22,
+                193,
+                "VECTOR_COMB",
+                vec![
+                    field("encoding", 0, vec![byte(1)]),
+                    field("n_vectors", 0, vec![integer(4)]),
+                    field("n_max_vectors", 0, vec![integer(4)]),
+                    field("shift", 0, vec![integer(2)]),
+                    // The tooth list grows ahead of the capacity.
+                    field("teeth", 192, vec![pointer(23), pointer(0)]),
+                ],
+            ),
+            node(
+                23,
+                192,
+                "VECTOR_TOOTH",
+                vec![field(
+                    "values",
+                    0,
+                    positions
+                        .iter()
+                        .map(|v| FieldValue::Double(Some(*v)))
+                        .collect(),
+                )],
+            ),
+            node(
+                24,
+                191,
+                "INTEGER_COMB",
+                vec![
+                    field("encoding", 0, vec![byte(1)]),
+                    field("n_integers", 0, vec![integer(12)]),
+                    field("n_max_integers", 0, vec![integer(16)]),
+                    field("n_bits_per_integer", 0, vec![integer(32)]),
+                    field("shift", 0, vec![integer(2)]),
+                    field("teeth", 190, teeth.iter().map(|t| pointer(*t)).collect()),
+                ],
+            ),
+            tooth(25, &corners[0..4]),
+            tooth(26, &corners[4..8]),
+            tooth(27, &corners[8..12]),
+        ]);
+        nodes
+    }
+
+    fn map_nodes(nodes: &[RawNode]) -> Result<BrepModel, ParseError> {
+        Mapper::new(
+            BrepSourceFormat::Binary,
+            "SCH_TEST",
+            nodes,
+            RoleAccess::Named,
+        )
+        .map()
+    }
+
+    #[test]
+    fn decodes_stored_facets_from_one_or_zero_based_corners() {
+        let one_based = [1, 3, 2, 1, 2, 4, 2, 3, 4, 1, 4, 3];
+        let zero_based = one_based.map(|corner| corner - 1);
+        for corners in [one_based, zero_based] {
+            let model = map_nodes(&mesh_nodes(corners, 0, [25, 26, 27, 0]));
+            assert!(model.is_ok(), "{model:?}");
+            let Ok(model) = model else {
+                return;
+            };
+            assert!(model.complete);
+            assert!(model.diagnostics.is_empty());
+            assert!(matches!(model.surfaces[0].kind, SurfaceKind::Mesh(_)));
+            let SurfaceKind::Mesh(mesh) = &model.surfaces[0].kind else {
+                return;
+            };
+            assert_eq!(mesh.vertex_count(), 4);
+            assert_eq!(mesh.triangle_count(), 4);
+            assert_eq!(mesh.positions[3..6], [1.0, 0.0, 0.0]);
+            assert_eq!(mesh.triangles, [0, 2, 1, 0, 1, 3, 1, 2, 3, 0, 3, 2]);
+            let sources: Vec<_> = mesh.sources.iter().map(|s| s.node_index).collect();
+            assert_eq!(sources, [21, 22, 24]);
+        }
+    }
+
+    #[test]
+    fn retains_placed_facets_and_rejects_malformed_pools() {
+        let corners = [1, 3, 2, 1, 2, 4, 2, 3, 4, 1, 4, 3];
+        // A transform is not applied: the facets are kept, undecoded.
+        let model = map_nodes(&mesh_nodes(corners, 9, [25, 26, 27, 0]));
+        assert!(model.is_ok(), "{model:?}");
+        if let Ok(model) = model {
+            assert!(!model.complete);
+            assert_eq!(model.diagnostics[0].code, "geometry.unsupported_surface");
+            assert!(matches!(
+                model.surfaces[0].kind,
+                SurfaceKind::Unsupported { .. }
+            ));
+        }
+        // A corner past the pool, and a null tooth inside the stored count.
+        let mut outside = corners;
+        outside[5] = 9;
+        assert!(map_nodes(&mesh_nodes(outside, 0, [25, 26, 27, 0])).is_err());
+        assert!(map_nodes(&mesh_nodes(corners, 0, [25, 0, 27, 0])).is_err());
     }
 }

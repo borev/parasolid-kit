@@ -850,27 +850,60 @@ pub enum SurfaceKind {
     Offset { basis_surface: BrepId, offset: f64 },
     /// Exact NURBS definition assembled from auxiliary nodes.
     Nurbs(NurbsSurface),
-    /// Faceted MESH surface retained without choosing an index origin.
-    ///
-    /// `embedded: None` records that this document has no embedded `PSM_MESH` link; XT allows
-    /// associated mesh-file storage, but that file is not resolved by the B-Rep mapper.
-    /// `transform` is the decoded linked source transform when present. Coordinates are not
-    /// unit-converted.
-    Mesh {
-        /// Source MESH transmit index.
-        source_mesh_index: u32,
-        /// Raw embedded pools, or `None` when `psm_imesh` is null in this document.
-        embedded: Option<RawMeshData>,
-        /// Source transform pointer, including null as `None`.
-        transform_index: Option<u32>,
-        /// Decoded transform linked by the source MESH, if non-null.
-        transform: Option<TransformNode>,
-        /// Raw MESH fields retained when `psm_imesh` is null, without interpreting any
-        /// schema-specific external-file locator.
-        unembedded_source_fields: Option<Vec<RawField>>,
-    },
+    /// Facets stored in the stream (a facet or "mesh" face).
+    Mesh(MeshSurface),
+    /// Raw MESH record retained without choosing an index origin.
+    StoredMesh(StoredMeshSurface),
     /// Geometry type retained without claiming semantic support.
     Unsupported { type_name: String },
+}
+
+/// Facet geometry of a `MESH` surface: the triangles stored in the stream.
+///
+/// A mesh is not an exact surface; it carries no parameterization.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MeshSurface {
+    /// Vertex positions in model units, three coordinates per vertex.
+    pub positions: Vec<f64>,
+    /// Zero-based vertex indices, three per triangle, in the stored winding.
+    pub triangles: Vec<u32>,
+    /// Raw-node provenance: `PSM_MESH`, then the position and index pools.
+    pub sources: Vec<SourceNodeRef>,
+}
+
+impl MeshSurface {
+    /// Number of vertices.
+    #[must_use]
+    pub fn vertex_count(&self) -> usize {
+        self.positions.len() / 3
+    }
+
+    /// Number of triangles.
+    #[must_use]
+    pub fn triangle_count(&self) -> usize {
+        self.triangles.len() / 3
+    }
+}
+
+/// Faceted MESH surface retained in raw source form.
+///
+/// `embedded: None` records that this document has no embedded `PSM_MESH` link; XT allows
+/// associated mesh-file storage, but that file is not resolved by the B-Rep mapper.
+/// `transform` is the decoded linked source transform when present. Coordinates are not
+/// unit-converted.
+#[derive(Debug, Clone, PartialEq)]
+pub struct StoredMeshSurface {
+    /// Source MESH transmit index.
+    pub source_mesh_index: u32,
+    /// Raw embedded pools, or `None` when `psm_imesh` is null in this document.
+    pub embedded: Option<RawMeshData>,
+    /// Source transform pointer, including null as `None`.
+    pub transform_index: Option<u32>,
+    /// Decoded transform linked by the source MESH, if non-null.
+    pub transform: Option<TransformNode>,
+    /// Raw MESH fields retained when `psm_imesh` is null, without interpreting any
+    /// schema-specific external-file locator.
+    pub unembedded_source_fields: Option<Vec<RawField>>,
 }
 
 impl SurfaceKind {
@@ -890,7 +923,8 @@ impl SurfaceKind {
             Self::Swept { .. } | Self::SweptWithSource { .. } => "swept",
             Self::Offset { .. } => "offset",
             Self::Nurbs(_) => "nurbs",
-            Self::Mesh { .. } => "mesh",
+            Self::Mesh(_) => "mesh",
+            Self::StoredMesh(_) => "stored_mesh",
             Self::Unsupported { .. } => "unsupported",
         }
     }
@@ -907,7 +941,7 @@ impl SurfaceKind {
 
     /// Place a mesh surface using an explicit position-index origin and face sense.
     ///
-    /// Returns `None` for non-mesh surfaces and for MESH records with no embedded PSM data.
+    /// Returns `None` for non-stored-mesh surfaces and for MESH records with no embedded PSM data.
     /// A null transform leaves coordinates in their raw stored frame; no unit conversion is
     /// applied.
     ///
@@ -920,11 +954,11 @@ impl SurfaceKind {
         face_sense: Sense,
     ) -> Result<Option<Vec<[[f64; 3]; 3]>>, MeshDataError> {
         match self {
-            Self::Mesh {
+            Self::StoredMesh(StoredMeshSurface {
                 embedded: Some(mesh),
                 transform,
                 ..
-            } => mesh
+            }) => mesh
                 .placed_triangles(origin, transform.as_ref(), face_sense)
                 .map(Some),
             _ => Ok(None),
@@ -1124,11 +1158,11 @@ impl BrepModel {
             });
         }
         match &surface.kind {
-            SurfaceKind::Mesh {
+            SurfaceKind::StoredMesh(StoredMeshSurface {
                 embedded: Some(mesh),
                 transform,
                 ..
-            } => mesh
+            }) => mesh
                 .placed_triangles_with_inferred_index_origin(transform.as_ref(), face.sense)
                 .map(Some),
             _ => Ok(None),

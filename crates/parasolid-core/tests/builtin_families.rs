@@ -37,10 +37,13 @@ fn family_digest(family_id: &str, members: &[FamilyMember], base: &[FamilyMember
 #[test]
 fn every_exact_key_belongs_to_one_derived_family() -> support::Result<()> {
     let registry = BuiltinProfileRegistry::compiled()?;
-    // Seventeen standard families (9003 … 33103) and nineteen embedded
-    // families (15003-13006 … 37102-13006) are derived from 57 profiles;
+    // Nineteen standard families (8008 … 33103) and nineteen embedded
+    // families (15003-13006 … 37102-13006) are derived from 64 exact profiles;
     // five TopSolid exact profiles are excluded from family membership.
-    assert_eq!(registry.families().len(), 36);
+    assert_eq!(registry.profiles().len(), 64);
+    // Nineteen standard families (8008 … 33103) and nineteen embedded
+    // families (15003-13006 … 37102-13006) are derived from those contributors.
+    assert_eq!(registry.families().len(), 38);
     let mut covered = 0;
     for profile in registry
         .profiles()
@@ -71,8 +74,8 @@ fn every_exact_key_belongs_to_one_derived_family() -> support::Result<()> {
             covered += 1;
         }
     }
-    assert_eq!(covered, 57);
-    assert_eq!(registry.len(), 62);
+    assert_eq!(covered, 59);
+    assert_eq!(registry.len(), 64);
     Ok(())
 }
 
@@ -138,20 +141,20 @@ fn producer_families_merge_the_expected_members() -> support::Result<()> {
     assert_eq!(
         members("35102-13006")?,
         [
-            "solidworks-3501210-35102-13006-r2",
-            "solidworks-3501256-35102-13006-r2",
+            "solidworks-3501210-35102-13006-r3",
+            "solidworks-3501256-35102-13006-r3",
         ]
     );
     assert_eq!(
         members("37102-13006")?,
-        ["onshape-sch37102-13006-r3", "solidworks-sch37102-13006-r3"]
+        ["onshape-sch37102-13006-r3", "solidworks-sch37102-13006-r4"]
     );
     assert_eq!(
         members("28002-13006")?,
         [
             "icad-2800188-28002-13006-r1",
-            "solidworks-2800191-28002-13006-r2",
-            "solidworks-2800209-28002-13006-r2",
+            "solidworks-2800191-28002-13006-r3",
+            "solidworks-2800209-28002-13006-r3",
         ]
     );
     assert_eq!(members("30000")?, ["onshape-sch30000-r3"]);
@@ -167,43 +170,54 @@ fn producer_families_merge_the_expected_members() -> support::Result<()> {
     assert_eq!(
         members("25001-13006")?,
         [
-            "nx-2600169-25001-13006-r2",
-            "parasolid-2600217-25001-13006-r2"
+            "nx-2600169-25001-13006-r3",
+            "parasolid-2600217-25001-13006-r3"
         ]
     );
     // One public NX key each anchors these families; other builds of the two
     // schemas resolve through them.
-    assert_eq!(members("30100-13006")?, ["nx-3001232-30100-13006-r2"]);
-    assert_eq!(members("34001-13006")?, ["nx-3400176-34001-13006-r2"]);
+    assert_eq!(members("30100-13006")?, ["nx-3001232-30100-13006-r3"]);
+    assert_eq!(members("34001-13006")?, ["nx-3400176-34001-13006-r3"]);
+    // The standard schemas 8008 and 25001 are anchored by one exact key each.
+    assert_eq!(members("8008")?, ["solidworks-800000-8008-r1"]);
+    assert_eq!(members("25001")?, ["inventor-2600169-25001-r1"]);
 
     // Every embedded family over 13006 takes the reviewed declarations of all
     // 13006 profiles: the SolidWorks swept surface and blends reach the iCAD-only
     // families, and the Onshape 37.1 membership audit (176 absent) applies to all.
+    // The facet types above the base's type table are absent from every 13006
+    // family.
     for family_id in ["20000-13006", "19008-13006", "37102-13006", "30100-13006"] {
         let family = registry
             .profile(&format!("family-{family_id}"))
             .ok_or("family")?;
-        assert_eq!(family.absent_base_types().collect::<Vec<_>>(), [176, 204]);
+        assert_eq!(
+            family.absent_base_types().collect::<Vec<_>>(),
+            [
+                176, 189, 190, 191, 192, 193, 201, 204, 205, 206, 207, 208, 210, 211
+            ]
+        );
         for kind in [
-            10, 11, 54, 56, 59, 60, 67, 68, 85, 86, 87, 88, 89, 90, 91, 100, 101,
+            10, 11, 54, 56, 59, 60, 67, 68, 85, 86, 87, 88, 89, 90, 91, 99, 100, 101, 163, 184,
         ] {
             assert!(
                 family.definition(kind).is_some(),
                 "{family_id} lacks {kind}"
             );
         }
-        // The shared 56 declarations (with ASSEMBLY, INSTANCE, TRANSFORM and
-        // the point, vector, axis, tag and direction value nodes) plus GROUP
-        // and MEMBER_OF_GROUP from the Parasolid 24 acceptance-test profile.
-        assert_eq!(family.definitions().len(), 58);
-        assert!(!family.base_members().is_empty());
+        // The shared 58 declarations (with ASSEMBLY, INSTANCE, TRANSFORM, the
+        // point, vector, axis, tag and direction value nodes, FIELD_NAMES and
+        // the two helical forms) plus GROUP and MEMBER_OF_GROUP from the
+        // Parasolid 24 acceptance-test profile.
+        assert_eq!(family.definitions().len(), 60);
+        assert_ne!(family.base_members(), []);
     }
     // The standard 13006 family likewise gains the embedded profiles' declarations.
     let standard = registry.profile("family-13006").ok_or("family")?;
     assert!(standard.definition(54).is_some() && standard.definition(101).is_some());
     // A standard family of another revision keeps only its own revision's layouts.
     let revision_28101 = registry.profile("family-28101").ok_or("family")?;
-    assert!(revision_28101.base_members().is_empty());
+    assert_eq!(revision_28101.base_members(), []);
     assert!(revision_28101.definition(54).is_none());
     Ok(())
 }

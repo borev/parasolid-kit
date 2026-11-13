@@ -2,10 +2,16 @@
 
 from .evaluation import (
     CurveEvaluation,
+    CurveEvaluation2D,
     GeometryEvaluationError,
+    SurfaceCurveEvaluation,
     SurfaceEvaluation,
     evaluate_curve,
+    evaluate_curve_2d,
+    evaluate_curve_2d_many,
     evaluate_surface,
+    evaluate_surface_curve,
+    evaluate_surface_curve_many,
     sample_curve,
 )
 from .faceted import (
@@ -50,6 +56,7 @@ from .geometry import (
     RawVectorPool,
     SphereSurface,
     SpunSurface,
+    StoredMeshSurface,
     SurfaceDefinition,
     SurfaceGeometry,
     SurfaceKind,
@@ -114,6 +121,7 @@ __all__ = [
     "ConeSurface",
     "CurveDefinition",
     "CurveEvaluation",
+    "CurveEvaluation2D",
     "CurveGeometry",
     "CurveKind",
     "CylinderSurface",
@@ -157,6 +165,8 @@ __all__ = [
     "SourceNodeRef",
     "SphereSurface",
     "SpunSurface",
+    "StoredMeshSurface",
+    "SurfaceCurveEvaluation",
     "SurfaceDefinition",
     "SurfaceEvaluation",
     "SurfaceGeometry",
@@ -175,7 +185,11 @@ __all__ = [
     "decode_embedded_mesh",
     "decode_polyline",
     "evaluate_curve",
+    "evaluate_curve_2d",
+    "evaluate_curve_2d_many",
     "evaluate_surface",
+    "evaluate_surface_curve",
+    "evaluate_surface_curve_many",
     "faceted_geometry",
     "sample_curve",
 ]

@@ -759,42 +759,42 @@ fn map_assembly(
                 schema_key,
                 coverage: crate::BuiltinProfileCoverage::VerifiedSubset,
                 profile_sha256,
-            } if (profile_id == "solidworks-3101290-31100-13006-r2"
-                && *profile_revision == 2
+            } if (profile_id == "solidworks-3101290-31100-13006-r3"
+                && *profile_revision == 3
                 && schema_key == "SCH_3101290_31100_13006"
-                && profile_sha256 == "bee8630028173b14a84497976ff74082bbb9c8bc8af1ae71059c389968420c5b"
-                || profile_id == "solidworks-sch37102-13006-r3"
-                    && *profile_revision == 3
+                && profile_sha256 == "0477947dd1a5b6fc11baaa344637e44d44af0bec1ae82a1de8dd956272b1c5f4"
+                || profile_id == "solidworks-sch37102-13006-r4"
+                    && *profile_revision == 4
                     && schema_key == "SCH_3701229_37102_13006"
-                    && profile_sha256 == "7300096c034365663a13f40c96a919d19b73d25b4c957f9dbb0e472c0a381730"
+                    && profile_sha256 == "aa0061b69e33343ad26aeb35a4598c071643d26f541eb4cca5e810e0e28b7a33"
                 || profile_id == "icad-1901315-19008-13006-r2"
                     && *profile_revision == 2
                     && schema_key == "SCH_1901315_19008_13006"
                     && profile_sha256 == "e9d776fdc6cd29bdc9b3bbbc05e0b75c10e287d515a5ac7c6cad01547639ded8"
-                || profile_id == "icad-2401000-20000-r3"
-                    && *profile_revision == 3
+                || profile_id == "icad-2401000-20000-r4"
+                    && *profile_revision == 4
                     && schema_key == "SCH_2401000_20000"
-                    && profile_sha256 == "fbdd2b2c31177b9fba0104c4a7d9ead562c38202aff91f2759f30101557fa53f"
-                || profile_id == "parasolid-2400164-20000-13006-r2"
-                    && *profile_revision == 2
+                    && profile_sha256 == "ef15815c7b2d6a43e8ffff95e2d54f726f195e001081864fdc4afa84755e48ff"
+                || profile_id == "parasolid-2400164-20000-13006-r3"
+                    && *profile_revision == 3
                     && schema_key == "SCH_2400164_20000_13006"
-                    && profile_sha256 == "ef75cfbf0f21455156dde0b6d346e3be92dd114f9eb2500f4a2e7f7dd9de39ae"
-                || profile_id == "nx-2600169-25001-13006-r2"
-                    && *profile_revision == 2
+                    && profile_sha256 == "a234638a7b7cd27eeeafa7052db262d8832888d4196b22f2b6a169a38d175a92"
+                || profile_id == "nx-2600169-25001-13006-r3"
+                    && *profile_revision == 3
                     && schema_key == "SCH_2600169_25001_13006"
-                    && profile_sha256 == "45a2e1d9ca4e48831c5e4c757978f0cde09e3d67c46d88392055f52ea031eea0"
-                || profile_id == "parasolid-2600217-25001-13006-r2"
-                    && *profile_revision == 2
+                    && profile_sha256 == "e47af09ef9d77bfa9ff08b994fbd506997d1779655e2371e5c570716ab94ac4f"
+                || profile_id == "parasolid-2600217-25001-13006-r3"
+                    && *profile_revision == 3
                     && schema_key == "SCH_2600217_25001_13006"
-                    && profile_sha256 == "99becb31c455144e4bb98e25fa97232518754b4ea9b6115c3533f554ad8ce18b"
-                || profile_id == "nx-3001232-30100-13006-r2"
-                    && *profile_revision == 2
+                    && profile_sha256 == "942926d0b01fa981078a2d285f0684434950453122311e73b05fbee1aa3622a4"
+                || profile_id == "nx-3001232-30100-13006-r3"
+                    && *profile_revision == 3
                     && schema_key == "SCH_3001232_30100_13006"
-                    && profile_sha256 == "a4d96295b72774062ffc6a7fb124664e1254f1df584748bbc5960897ec9b576b"
-                || profile_id == "nx-3400176-34001-13006-r2"
-                    && *profile_revision == 2
+                    && profile_sha256 == "d332ceb261f0f157cf15f1c4e34abc843fcec8d27c65a6cbee6b20a65431626a"
+                || profile_id == "nx-3400176-34001-13006-r3"
+                    && *profile_revision == 3
                     && schema_key == "SCH_3400176_34001_13006"
-                    && profile_sha256 == "254c0340fcef549d67badc03c25653f518e06d7657b892308a48f1f4b3aabf05")
+                    && profile_sha256 == "a4517ad28a3d8139661b9fe41e317afa2d17ec6824088d22781e315f95189a5b")
                 && key == schema_key
         );
     let role = |node: &RawNode| {
@@ -1206,50 +1206,50 @@ fn family_has_assembly_roles(provider: &SchemaProviderResolution, key: &str) -> 
                     member.profile_sha256.as_str()
                 ),
                 (
-                    "solidworks-3101290-31100-13006-r2",
-                    2,
-                    "SCH_3101290_31100_13006",
-                    "bee8630028173b14a84497976ff74082bbb9c8bc8af1ae71059c389968420c5b"
-                ) | (
-                    "solidworks-sch37102-13006-r3",
+                    "solidworks-3101290-31100-13006-r3",
                     3,
+                    "SCH_3101290_31100_13006",
+                    "0477947dd1a5b6fc11baaa344637e44d44af0bec1ae82a1de8dd956272b1c5f4"
+                ) | (
+                    "solidworks-sch37102-13006-r4",
+                    4,
                     "SCH_3701229_37102_13006",
-                    "7300096c034365663a13f40c96a919d19b73d25b4c957f9dbb0e472c0a381730"
+                    "aa0061b69e33343ad26aeb35a4598c071643d26f541eb4cca5e810e0e28b7a33"
                 ) | (
                     "icad-1901315-19008-13006-r2",
                     2,
                     "SCH_1901315_19008_13006",
                     "e9d776fdc6cd29bdc9b3bbbc05e0b75c10e287d515a5ac7c6cad01547639ded8"
                 ) | (
-                    "icad-2401000-20000-r3",
-                    3,
+                    "icad-2401000-20000-r4",
+                    4,
                     "SCH_2401000_20000",
-                    "fbdd2b2c31177b9fba0104c4a7d9ead562c38202aff91f2759f30101557fa53f"
+                    "ef15815c7b2d6a43e8ffff95e2d54f726f195e001081864fdc4afa84755e48ff"
                 ) | (
-                    "parasolid-2400164-20000-13006-r2",
-                    2,
+                    "parasolid-2400164-20000-13006-r3",
+                    3,
                     "SCH_2400164_20000_13006",
-                    "ef75cfbf0f21455156dde0b6d346e3be92dd114f9eb2500f4a2e7f7dd9de39ae"
+                    "a234638a7b7cd27eeeafa7052db262d8832888d4196b22f2b6a169a38d175a92"
                 ) | (
-                    "nx-2600169-25001-13006-r2",
-                    2,
+                    "nx-2600169-25001-13006-r3",
+                    3,
                     "SCH_2600169_25001_13006",
-                    "45a2e1d9ca4e48831c5e4c757978f0cde09e3d67c46d88392055f52ea031eea0"
+                    "e47af09ef9d77bfa9ff08b994fbd506997d1779655e2371e5c570716ab94ac4f"
                 ) | (
-                    "parasolid-2600217-25001-13006-r2",
-                    2,
+                    "parasolid-2600217-25001-13006-r3",
+                    3,
                     "SCH_2600217_25001_13006",
-                    "99becb31c455144e4bb98e25fa97232518754b4ea9b6115c3533f554ad8ce18b"
+                    "942926d0b01fa981078a2d285f0684434950453122311e73b05fbee1aa3622a4"
                 ) | (
-                    "nx-3001232-30100-13006-r2",
-                    2,
+                    "nx-3001232-30100-13006-r3",
+                    3,
                     "SCH_3001232_30100_13006",
-                    "a4d96295b72774062ffc6a7fb124664e1254f1df584748bbc5960897ec9b576b"
+                    "d332ceb261f0f157cf15f1c4e34abc843fcec8d27c65a6cbee6b20a65431626a"
                 ) | (
-                    "nx-3400176-34001-13006-r2",
-                    2,
+                    "nx-3400176-34001-13006-r3",
+                    3,
                     "SCH_3400176_34001_13006",
-                    "254c0340fcef549d67badc03c25653f518e06d7657b892308a48f1f4b3aabf05"
+                    "a4517ad28a3d8139661b9fe41e317afa2d17ec6824088d22781e315f95189a5b"
                 )
             )
         })
@@ -1724,7 +1724,8 @@ mod tests {
     use crate::brep::{
         Body, BodyKind, BrepMetrics, BrepModel, BrepModelWithResolvedBodyHierarchy,
         BrepSourceFormat, Face, MappedBodyChildren, RawIntegerPool, RawMeshData, RawVectorPool,
-        Region, RegionKind, Sense, Shell, SourceNodeRef, SurfaceGeometry, SurfaceKind,
+        Region, RegionKind, Sense, Shell, SourceNodeRef, StoredMeshSurface, SurfaceGeometry,
+        SurfaceKind,
         TopologyValidation,
     };
     use crate::{FieldDefinition, SchemaSource, TypeDefinition};
@@ -2532,16 +2533,16 @@ mod tests {
     fn accepts_only_reviewed_exact_assembly_profiles() -> Result<(), Box<dyn std::error::Error>> {
         for (profile_id, revision, key, digest) in [
             (
-                "solidworks-3101290-31100-13006-r2",
-                2,
+                "solidworks-3101290-31100-13006-r3",
+                3,
                 "SCH_3101290_31100_13006",
-                "bee8630028173b14a84497976ff74082bbb9c8bc8af1ae71059c389968420c5b",
+                "0477947dd1a5b6fc11baaa344637e44d44af0bec1ae82a1de8dd956272b1c5f4",
             ),
             (
-                "solidworks-sch37102-13006-r3",
-                3,
+                "solidworks-sch37102-13006-r4",
+                4,
                 "SCH_3701229_37102_13006",
-                "7300096c034365663a13f40c96a919d19b73d25b4c957f9dbb0e472c0a381730",
+                "aa0061b69e33343ad26aeb35a4598c071643d26f541eb4cca5e810e0e28b7a33",
             ),
             (
                 "icad-1901315-19008-13006-r2",
@@ -2550,40 +2551,40 @@ mod tests {
                 "e9d776fdc6cd29bdc9b3bbbc05e0b75c10e287d515a5ac7c6cad01547639ded8",
             ),
             (
-                "icad-2401000-20000-r3",
-                3,
+                "icad-2401000-20000-r4",
+                4,
                 "SCH_2401000_20000",
-                "fbdd2b2c31177b9fba0104c4a7d9ead562c38202aff91f2759f30101557fa53f",
+                "ef15815c7b2d6a43e8ffff95e2d54f726f195e001081864fdc4afa84755e48ff",
             ),
             (
-                "parasolid-2400164-20000-13006-r2",
-                2,
+                "parasolid-2400164-20000-13006-r3",
+                3,
                 "SCH_2400164_20000_13006",
-                "ef75cfbf0f21455156dde0b6d346e3be92dd114f9eb2500f4a2e7f7dd9de39ae",
+                "a234638a7b7cd27eeeafa7052db262d8832888d4196b22f2b6a169a38d175a92",
             ),
             (
-                "nx-2600169-25001-13006-r2",
-                2,
+                "nx-2600169-25001-13006-r3",
+                3,
                 "SCH_2600169_25001_13006",
-                "45a2e1d9ca4e48831c5e4c757978f0cde09e3d67c46d88392055f52ea031eea0",
+                "e47af09ef9d77bfa9ff08b994fbd506997d1779655e2371e5c570716ab94ac4f",
             ),
             (
-                "parasolid-2600217-25001-13006-r2",
-                2,
+                "parasolid-2600217-25001-13006-r3",
+                3,
                 "SCH_2600217_25001_13006",
-                "99becb31c455144e4bb98e25fa97232518754b4ea9b6115c3533f554ad8ce18b",
+                "942926d0b01fa981078a2d285f0684434950453122311e73b05fbee1aa3622a4",
             ),
             (
-                "nx-3001232-30100-13006-r2",
-                2,
+                "nx-3001232-30100-13006-r3",
+                3,
                 "SCH_3001232_30100_13006",
-                "a4d96295b72774062ffc6a7fb124664e1254f1df584748bbc5960897ec9b576b",
+                "d332ceb261f0f157cf15f1c4e34abc843fcec8d27c65a6cbee6b20a65431626a",
             ),
             (
-                "nx-3400176-34001-13006-r2",
-                2,
+                "nx-3400176-34001-13006-r3",
+                3,
                 "SCH_3400176_34001_13006",
-                "254c0340fcef549d67badc03c25653f518e06d7657b892308a48f1f4b3aabf05",
+                "a4517ad28a3d8139661b9fe41e317afa2d17ec6824088d22781e315f95189a5b",
             ),
         ] {
             let provider = SchemaProviderResolution::Builtin {
@@ -2792,7 +2793,7 @@ mod tests {
                 id: surface,
                 sense: Sense::Positive,
                 owner: None,
-                kind: SurfaceKind::Mesh {
+                kind: SurfaceKind::StoredMesh(StoredMeshSurface {
                     source_mesh_index: surface,
                     embedded: Some(RawMeshData {
                         mesh_index: surface,
@@ -2820,7 +2821,7 @@ mod tests {
                     transform_index: None,
                     transform: None,
                     unembedded_source_fields: None,
-                },
+                }),
                 source,
             });
         }
@@ -2902,7 +2903,7 @@ mod tests {
             id: 5,
             sense: Sense::Positive,
             owner: None,
-            kind: SurfaceKind::Mesh {
+            kind: SurfaceKind::StoredMesh(StoredMeshSurface {
                 source_mesh_index: 5,
                 embedded: Some(RawMeshData {
                     mesh_index: 5,
@@ -2930,7 +2931,7 @@ mod tests {
                 transform_index: None,
                 transform: None,
                 unembedded_source_fields: None,
-            },
+            }),
             source: model.bodies[0].source.clone(),
         });
         let resolved = BrepModelWithResolvedBodyHierarchy {

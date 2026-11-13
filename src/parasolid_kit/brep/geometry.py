@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import sys
+from array import array
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, TypeAlias
 
@@ -33,7 +35,7 @@ class SurfaceKind(str, Enum):
     CYLINDER = "cylinder"
     CONE = "cone"
     XT_CONE = "xt_cone"
-    MESH = "mesh"
+    STORED_MESH = "stored_mesh"
     SPHERE = "sphere"
     TORUS = "torus"
     SPUN = "spun"
@@ -42,6 +44,7 @@ class SurfaceKind(str, Enum):
     BLEND_BOUNDARY = "blend_boundary"
     OFFSET = "offset"
     NURBS = "nurbs"
+    MESH = "mesh"
     UNSUPPORTED = "unsupported"
 
 
@@ -411,8 +414,40 @@ class RawMeshData:
     normal_indices: RawIntegerPool | None
 
 
-@dataclass(frozen=True, slots=True)
 class MeshSurface:
+    """Facets stored in the stream (a facet or "mesh" face), not an exact surface.
+
+    ``positions`` packs three little-endian doubles per vertex in model units;
+    ``triangles`` packs three little-endian unsigned 32-bit zero-based vertex
+    indices per triangle, in the stored winding. :meth:`position_array` and
+    :meth:`triangle_array` unpack them without a Python object per value.
+    """
+
+    vertex_count: int
+    triangle_count: int
+    positions: bytes = field(repr=False)
+    triangles: bytes = field(repr=False)
+    sources: tuple[SourceNodeRef, ...]
+
+    def position_array(self) -> array:
+        """Coordinates as ``array('d')``, x, y, z per vertex."""
+        return _unpack("d", self.positions)
+
+    def triangle_array(self) -> array:
+        """Corner indices as an unsigned 32-bit array, three per triangle."""
+        return _unpack("I" if array("I").itemsize == 4 else "L", self.triangles)
+
+
+def _unpack(code: str, data: bytes) -> array:
+    values = array(code)
+    values.frombytes(data)
+    if sys.byteorder != "little":
+        values.byteswap()
+    return values
+
+
+@dataclass(frozen=True, slots=True)
+class StoredMeshSurface:
     """Faceted MESH definition retained in its raw source representation."""
 
     source_mesh_index: int
@@ -427,6 +462,7 @@ SurfaceDefinition: TypeAlias = (
     | CylinderSurface
     | ConeSurface
     | XtConeSurface
+    | StoredMeshSurface
     | MeshSurface
     | SphereSurface
     | TorusSurface
